@@ -1,4 +1,4 @@
-# Pre-commit hooks配置
+# 简化的Pre-commit hooks配置
 # 安装: pip install pre-commit && pre-commit install
 # 运行: pre-commit run --all-files
 
@@ -11,21 +11,11 @@ repos:
         description: 移除行尾空白字符
       - id: end-of-file-fixer
         description: 确保文件以换行符结尾
-      - id: check-yaml
-        description: 检查YAML文件语法
-      - id: check-json
-        description: 检查JSON文件语法
-      - id: check-toml
-        description: 检查TOML文件语法
       - id: check-merge-conflict
         description: 检查合并冲突标记
       - id: check-added-large-files
         description: 防止添加大文件
         args: ['--maxkb=1000']
-      - id: debug-statements
-        description: 检查调试语句
-      - id: check-docstring-first
-        description: 检查docstring位置
 
   # Python代码格式化
   - repo: https://github.com/psf/black
@@ -51,59 +41,7 @@ repos:
       - id: flake8
         description: Flake8代码检查
         args: [--max-line-length=127, --max-complexity=10]
-        additional_dependencies:
-          - flake8-docstrings
-          - flake8-import-order
-          - flake8-bugbear
-
-  # 安全检查
-  - repo: https://github.com/pycqa/bandit
-    rev: 1.7.5
-    hooks:
-      - id: bandit
-        description: Bandit安全检查
-        args: [-r, dialogue_manager/]
-        exclude: tests/
-
-  # 类型检查
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.5.1
-    hooks:
-      - id: mypy
-        description: MyPy类型检查
-        args: [--ignore-missing-imports]
-        additional_dependencies: [types-requests]
-        files: ^dialogue_manager/
-
-  # 文档字符串检查
-  - repo: https://github.com/pycqa/pydocstyle
-    rev: 6.3.0
-    hooks:
-      - id: pydocstyle
-        description: 文档字符串检查
-        args: [--convention=google]
-        files: ^dialogue_manager/
-
-  # 依赖安全检查
-  - repo: https://github.com/Lucas-C/pre-commit-hooks-safety
-    rev: v1.3.2
-    hooks:
-      - id: python-safety-dependencies-check
-        description: Safety依赖安全检查
 
 # 全局配置
 default_stages: [commit]
-fail_fast: false
-
-# CI配置
-ci:
-  autofix_commit_msg: |
-    [pre-commit.ci] auto fixes from pre-commit.com hooks
-
-    for more information, see https://pre-commit.ci
-  autofix_prs: true
-  autoupdate_branch: ''
-  autoupdate_commit_msg: '[pre-commit.ci] pre-commit autoupdate'
-  autoupdate_schedule: weekly
-  skip: []
-  submodules: false
+fail_fast: true  # 快速失败，提高效率

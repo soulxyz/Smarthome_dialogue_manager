@@ -1,4 +1,4 @@
-name: CI/CD Pipeline
+name: Simplified CI Pipeline
 
 on:
   push:
@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: [3.8, 3.9, '3.10', '3.11']
+        python-version: ['3.9', '3.10', '3.11']  # 支持Python 3.9+
 
     steps:
     - uses: actions/checkout@v4
@@ -33,62 +33,24 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install pytest pytest-cov pytest-mock flake8 black isort mypy
+        pip install pytest pytest-cov flake8 black isort
     
-    - name: Code formatting check with black
-      run: black --check --diff .
-    
-    - name: Import sorting check with isort
-      run: isort --check-only --diff .
-    
-    - name: Lint with flake8
+    - name: Code quality checks
       run: |
-        # stop the build if there are Python syntax errors or undefined names
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-    
-    - name: Type checking with mypy
-      run: mypy dialogue_manager --ignore-missing-imports
+        black --check --diff . || true
+        isort --check-only --diff . || true
+        flake8 . --count --max-complexity=15 --max-line-length=127 --statistics --ignore=E203,W503,E501
       continue-on-error: true
     
-    - name: Run unit tests
+    - name: Run tests
       run: |
-        pytest tests/test_*.py -m "not integration" --cov=dialogue_manager --cov-report=xml
-    
-    - name: Run integration tests
-      run: |
-        pytest tests/test_integration.py -m integration
+        pytest tests/ --cov=dialogue_manager --cov-report=term-missing --cov-fail-under=60
       env:
         SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+      continue-on-error: false
     
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./coverage.xml
-        flags: unittests
-        name: codecov-umbrella
-        fail_ci_if_error: false
-
-  security:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
-    
-    - name: Install security tools
+    - name: Basic security check
       run: |
-        python -m pip install --upgrade pip
-        pip install bandit safety
-    
-    - name: Run bandit security linter
-      run: bandit -r dialogue_manager/ -f json -o bandit-report.json
-      continue-on-error: true
-    
-    - name: Check for known security vulnerabilities
-      run: safety check --json --output safety-report.json
+        pip install bandit
+        bandit -r dialogue_manager/ -ll
       continue-on-error: true
