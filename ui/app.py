@@ -8,7 +8,7 @@ import os
 import sys
 import time
 from datetime import datetime
-from typing import Dict, List
+# Dict和List类型提示已移除，因为在代码中未使用
 
 import pandas as pd
 import streamlit as st
@@ -16,8 +16,8 @@ import streamlit as st
 # 添加项目根目录到Python路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dialogue_manager import DialogueEngine, MemoryManager
-from dialogue_manager.engine import EngineConfig
+from dialogue_manager import DialogueEngine, MemoryManager  # noqa: E402
+from dialogue_manager.engine import EngineConfig  # noqa: E402
 
 
 def init_session_state():
@@ -29,7 +29,7 @@ def init_session_state():
             # 尝试从Streamlit secrets读取
             try:
                 api_key = st.secrets.get("SILICONFLOW_API_KEY")
-            except:
+            except Exception:
                 pass
 
         if not api_key:

@@ -5,6 +5,7 @@
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -86,7 +87,7 @@ class SiliconFlowClient:
         if len(messages) > 10:
             # 如果消息太多，只保留最近的10条
             messages = messages[-10:]
-            self.logger.warning(f"Messages truncated to 10 items")
+            self.logger.warning("Messages truncated to 10 items")
 
         # 验证每个message的格式
         validated_messages = []
@@ -229,7 +230,7 @@ class SiliconFlowClient:
                     try:
                         error_data = response.json()
                         error_msg = error_data.get("error", {}).get("message", response.text)
-                    except:
+                    except Exception:
                         error_msg = response.text
 
                     return {"success": False, "error": f"Client error (HTTP {response.status_code}): {error_msg}"}
@@ -392,8 +393,6 @@ class SiliconFlowClient:
         Returns:
             str: 脱敏后的错误消息
         """
-        import re
-
         # 移除API密钥
         message = re.sub(r"Bearer [A-Za-z0-9\-_]+", "Bearer [REDACTED]", message)
         message = re.sub(r'api[_-]?key["\s]*[:=]["\s]*[A-Za-z0-9\-_]+', "api_key: [REDACTED]", message, flags=re.IGNORECASE)

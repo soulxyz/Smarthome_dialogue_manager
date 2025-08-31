@@ -184,8 +184,6 @@ class ClarificationAgent:
 
         try:
             # 方法2: 提取JSON数组部分
-            import re
-
             json_match = re.search(r"\[.*\]", text, re.DOTALL)
             if json_match:
                 candidates = json.loads(json_match.group())
@@ -265,8 +263,6 @@ class ClarificationAgent:
                         break
 
         # 抽取数值实体（温度、档位等）
-        import re
-
         number_patterns = [r"(\d+)\s*度", r"(\d+)\s*档", r"(\d+)\s*级", r"(\d+)\s*%", r"(\d+)\s*点", r"(\d+)"]
 
         for pattern in number_patterns:

@@ -109,7 +109,7 @@ class ConnectionPool:
                 try:
                     # 将连接放回池中
                     self.pool.put_nowait(conn)
-                except:
+                except Exception:
                     # 池已满，关闭连接
                     conn.close()
                     with self.lock:
@@ -236,7 +236,7 @@ class MemoryManager:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO user_profiles 
+                INSERT OR REPLACE INTO user_profiles
                 (user_id, preferences, device_config, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?)
             """,
@@ -289,7 +289,7 @@ class MemoryManager:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                UPDATE user_profiles 
+                UPDATE user_profiles
                 SET preferences = ?, updated_at = ?
                 WHERE user_id = ?
             """,
@@ -385,7 +385,7 @@ class MemoryManager:
             # 保存会话记录
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO sessions 
+                INSERT OR REPLACE INTO sessions
                 (session_id, user_id, start_time, end_time, turn_count, context, summary)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
@@ -434,8 +434,8 @@ class MemoryManager:
                 record_id = f"{session_id}_{turn_id}"
                 cursor.execute(
                     """
-                    INSERT OR REPLACE INTO dialogue_records 
-                    (record_id, session_id, turn_id, user_input, system_response, 
+                    INSERT OR REPLACE INTO dialogue_records
+                    (record_id, session_id, turn_id, user_input, system_response,
                      intent, entities, confidence, timestamp, context_snapshot)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -516,7 +516,7 @@ class MemoryManager:
                 SELECT dr.* FROM dialogue_records dr
                 JOIN sessions s ON dr.session_id = s.session_id
                 WHERE s.user_id = ? AND (
-                    dr.user_input LIKE ? OR 
+                    dr.user_input LIKE ? OR
                     dr.system_response LIKE ? OR
                     dr.intent LIKE ?
                 )
