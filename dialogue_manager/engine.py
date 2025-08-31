@@ -189,6 +189,30 @@ class DialogueEngine:
                 context=self.context.copy(),
             )
             self.dialogue_history.append(turn)
+            
+            # 保存对话记录到内存管理器（分别保存用户输入和系统响应）
+            if hasattr(self.memory_manager, 'save_dialogue'):
+                # 保存用户输入
+                user_data = {
+                    "session_id": self.session_id,
+                    "user_input": user_input,
+                    "system_response": "",
+                    "intent_result": intent_result,
+                    "timestamp": turn.timestamp,
+                    "type": "user"
+                }
+                self.memory_manager.save_dialogue(user_data)
+                
+                # 保存系统响应
+                system_data = {
+                    "session_id": self.session_id,
+                    "user_input": "",
+                    "system_response": response,
+                    "intent_result": intent_result,
+                    "timestamp": turn.timestamp,
+                    "type": "assistant"
+                }
+                self.memory_manager.save_dialogue(system_data)
 
             # 更新上下文
             self._update_context(intent_result, debug_info)
@@ -350,8 +374,10 @@ class DialogueEngine:
     def end_session(self):
         """结束对话会话"""
         if self.session_id:
+            # 从session_id中提取user_id
+            user_id = self.session_id.split("_")[0] if "_" in self.session_id else "unknown"
             # 保存会话到数据库
-            self.memory_manager.save_session(self.session_id, self.dialogue_history)
+            self.memory_manager.save_session(self.session_id, self.dialogue_history, user_id)
             self.logger.info(f"Ended session: {self.session_id}")
 
         self.session_id = None

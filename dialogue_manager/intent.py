@@ -19,6 +19,7 @@ class IntentType(Enum):
     SCHEDULE_TASK = "schedule_task"  # 定时任务
     SYSTEM_CONFIG = "system_config"  # 系统配置
     GREETING = "greeting"  # 问候
+    QUERY_WEATHER = "query_weather"  # 天气查询
     UNKNOWN = "unknown"  # 未知意图
 
 
@@ -97,6 +98,15 @@ class IntentRecognizer:
 
         # 问候相关关键词
         self.greeting_patterns = [r"^(你好|您好|hi|hello|嗨)", r"(早上好|下午好|晚上好|晚安)", r"(谢谢|感谢|再见|拜拜)"]
+        
+        # 天气查询相关关键词
+        self.weather_patterns = [
+            r".*?(天气|气温|温度|下雨|晴天|阴天|雨天).*?",
+            r"(今天|明天|后天|昨天).*?(天气|气温|温度)",
+            r".*?(怎么样|如何).*?(天气|气温)",
+            r"(那|这).*?(明天|今天|后天|昨天).*?(呢|怎么样|如何)",
+            r"(明天|今天|后天|昨天).*?(呢|怎么样|如何)"
+        ]
 
         # 设备实体模式
         self.device_entities = {
@@ -135,8 +145,8 @@ class IntentRecognizer:
             # 意图分类
             intent_scores = self._classify_intent(processed_input)
 
-            # 实体抽取
-            entities = self._extract_entities(processed_input)
+            # 实体抽取（结合历史记录）
+            entities = self._extract_entities_with_history(processed_input, history)
 
             # 上下文增强
             intent_scores = self._enhance_with_context(user_input, intent_scores, context, history)
@@ -220,6 +230,11 @@ class IntentRecognizer:
         for pattern in self.greeting_patterns:
             if re.search(pattern, user_input):
                 scores[IntentType.GREETING.value] += 0.9
+                
+        # 天气查询意图
+        for pattern in self.weather_patterns:
+            if re.search(pattern, user_input):
+                scores[IntentType.QUERY_WEATHER.value] += 0.8
 
         # 使用会话级动态模式
         for intent_key, pattern_list in self.session_patterns.items():
@@ -275,6 +290,21 @@ class IntentRecognizer:
                 end_pos=match.end(),
             )
             entities.append(entity)
+            
+        # 抽取地点实体
+        location_keywords = ["北京", "上海", "广州", "深圳", "杭州", "南京", "武汉", "成都", "重庆", "西安"]
+        for location in location_keywords:
+            if location in user_input:
+                start_pos = user_input.find(location)
+                entity = Entity(
+                    name=location,
+                    value=location,
+                    entity_type="location",
+                    confidence=0.9,
+                    start_pos=start_pos,
+                    end_pos=start_pos + len(location),
+                )
+                entities.append(entity)
 
         return entities
 
@@ -291,12 +321,42 @@ class IntentRecognizer:
 
         # 根据历史对话调整分数
         if history:
-            recent_intents = [turn.intent for turn in history[-3:] if turn.intent]
+            recent_intents = []
+            for turn in history[-3:]:
+                if hasattr(turn, 'intent') and turn.intent:
+                    recent_intents.append(turn.intent)
+                elif isinstance(turn, dict) and turn.get('intent'):
+                    recent_intents.append(turn['intent'])
             for intent in recent_intents:
                 if intent in intent_scores:
                     intent_scores[intent] += 0.1
 
         return intent_scores
+        
+    def _extract_entities_with_history(self, user_input: str, history: List) -> List[Entity]:
+        """结合历史记录提取实体"""
+        entities = self._extract_entities(user_input)
+        
+        # 从历史记录中提取相关实体
+        if history:
+            for turn in history[-2:]:  # 检查最近2轮对话
+                if isinstance(turn, dict) and turn.get('entities'):
+                    for hist_entity in turn['entities']:
+                        if isinstance(hist_entity, dict):
+                            # 如果当前输入中没有地点实体，但历史中有，则继承
+                            if (hist_entity.get('type') == 'location' and 
+                                not any(e.entity_type == 'location' for e in entities)):
+                                entity = Entity(
+                                    name=hist_entity['value'],
+                                    value=hist_entity['value'],
+                                    entity_type='location',
+                                    confidence=0.7,  # 历史实体置信度稍低
+                                    start_pos=0,
+                                    end_pos=0,
+                                )
+                                entities.append(entity)
+        
+        return entities
 
     def _select_best_intent(self, intent_scores: Dict[str, float]) -> Tuple[str, float]:
         """选择最佳意图"""

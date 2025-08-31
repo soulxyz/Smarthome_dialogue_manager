@@ -299,6 +299,31 @@ class MemoryManager:
 
         self.logger.info(f"Updated preferences for user {user_id}")
 
+    def save_user_profile(self, profile: UserProfile):
+        """保存用户档案
+
+        Args:
+            profile: 用户档案对象
+        """
+        with self.pool.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO user_profiles
+                (user_id, preferences, device_config, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+            """,
+                (
+                    profile.user_id,
+                    json.dumps(profile.preferences, ensure_ascii=False),
+                    json.dumps(profile.device_config, ensure_ascii=False),
+                    profile.created_at,
+                    profile.updated_at,
+                ),
+            )
+            conn.commit()
+        self.logger.info(f"Saved user profile for {profile.user_id}")
+
     def load_user_context(self, user_id: str) -> Dict:
         """加载用户上下文
 
@@ -349,23 +374,26 @@ class MemoryManager:
                 start_time = first_turn.timestamp
                 end_time = last_turn.timestamp
             elif isinstance(first_turn, dict):  # 字典格式
-                # 转换时间戳格式
-                timestamp_str = first_turn.get("timestamp", "")
-                if isinstance(timestamp_str, str) and ":" in timestamp_str:
+                # 优先使用数字时间戳
+                start_timestamp = first_turn.get("timestamp")
+                if isinstance(start_timestamp, (int, float)):
+                    start_time = start_timestamp
+                # 兼容字符串格式
+                elif isinstance(start_timestamp, str) and ":" in start_timestamp:
                     from datetime import date, datetime
-
                     today = date.today()
-                    dt = datetime.strptime(f"{today} {timestamp_str}", "%Y-%m-%d %H:%M:%S")
+                    dt = datetime.strptime(f"{today} {start_timestamp}", "%Y-%m-%d %H:%M:%S")
                     start_time = dt.timestamp()
                 else:
                     start_time = time.time()
 
-                timestamp_str = last_turn.get("timestamp", "")
-                if isinstance(timestamp_str, str) and ":" in timestamp_str:
+                end_timestamp = last_turn.get("timestamp")
+                if isinstance(end_timestamp, (int, float)):
+                    end_time = end_timestamp
+                elif isinstance(end_timestamp, str) and ":" in end_timestamp:
                     from datetime import date, datetime
-
                     today = date.today()
-                    dt = datetime.strptime(f"{today} {timestamp_str}", "%Y-%m-%d %H:%M:%S")
+                    dt = datetime.strptime(f"{today} {end_timestamp}", "%Y-%m-%d %H:%M:%S")
                     end_time = dt.timestamp()
                 else:
                     end_time = time.time()

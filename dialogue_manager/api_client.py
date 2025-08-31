@@ -82,7 +82,7 @@ class SiliconFlowClient:
 
         # 验证messages参数
         if not messages or len(messages) == 0:
-            return APIResponse(success=False, content="", error_message="Messages cannot be empty", response_time=0)
+            return APIResponse(success=False, content="", error_message="Messages cannot be empty", response_time=0, usage={}, model="")
 
         if len(messages) > 10:
             # 如果消息太多，只保留最近的10条
@@ -101,7 +101,7 @@ class SiliconFlowClient:
             validated_messages.append({"role": msg["role"], "content": str(msg["content"])})
 
         if not validated_messages:
-            return APIResponse(success=False, content="", error_message="No valid messages found", response_time=0)
+            return APIResponse(success=False, content="", error_message="No valid messages found", response_time=0, usage={}, model="")
 
         # 构建请求参数
         payload = {
