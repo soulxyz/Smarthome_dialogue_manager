@@ -7,9 +7,16 @@ from dialogue_manager.clarification import ClarificationAgent
 
 
 class DummyAPIResponse:
-    def __init__(self, success: bool, content: str = "", error_message: Optional[str] = None,
-                 model: str = "test-model", response_time: float = 0.01, raw_response: Optional[dict] = None,
-                 usage: Optional[dict] = None):
+    def __init__(
+        self,
+        success: bool,
+        content: str = "",
+        error_message: Optional[str] = None,
+        model: str = "test-model",
+        response_time: float = 0.01,
+        raw_response: Optional[dict] = None,
+        usage: Optional[dict] = None,
+    ):
         self.success = success
         self.content = content
         self.error_message = error_message
@@ -54,17 +61,13 @@ def intent_recognizer():
 @pytest.fixture()
 def fake_api_success():
     # 返回一个成功的JSON候选
-    return FakeAPIClient([
-        DummyAPIResponse(success=True, content='["打开空调", "关闭电视"]')
-    ])
+    return FakeAPIClient([DummyAPIResponse(success=True, content='["打开空调", "关闭电视"]')])
 
 
 @pytest.fixture()
 def fake_api_timeout():
     # 模拟一次超时失败
-    return FakeAPIClient([
-        DummyAPIResponse(success=False, content="", error_message="timeout")
-    ])
+    return FakeAPIClient([DummyAPIResponse(success=False, content="", error_message="timeout")])
 
 
 def test_intent_device_control_entities(intent_recognizer):

@@ -11,9 +11,4 @@ from .intent import IntentRecognizer
 from .memory import MemoryManager
 from .api_client import SiliconFlowClient
 
-__all__ = [
-    "DialogueEngine",
-    "IntentRecognizer", 
-    "MemoryManager",
-    "SiliconFlowClient"
-]
+__all__ = ["DialogueEngine", "IntentRecognizer", "MemoryManager", "SiliconFlowClient"]
