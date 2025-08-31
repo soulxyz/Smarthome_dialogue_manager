@@ -3,11 +3,11 @@
 负责用户输入的意图分类、实体抽取和置信度评估。
 """
 
-import re
 import logging
-from typing import Dict, List, Optional, Tuple
+import re
 from dataclasses import dataclass
 from enum import Enum
+from typing import Dict, List, Optional, Tuple
 
 
 class IntentType(Enum):

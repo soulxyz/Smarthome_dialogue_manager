@@ -3,16 +3,16 @@
 负责用户对话历史、上下文信息和偏好设置的存储与检索。
 """
 
-import sqlite3
 import json
-import time
 import logging
+import sqlite3
 import threading
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, asdict
-from pathlib import Path
+import time
 from contextlib import contextmanager
-from queue import Queue, Empty
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from queue import Empty, Queue
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -352,7 +352,7 @@ class MemoryManager:
                 # 转换时间戳格式
                 timestamp_str = first_turn.get("timestamp", "")
                 if isinstance(timestamp_str, str) and ":" in timestamp_str:
-                    from datetime import datetime, date
+                    from datetime import date, datetime
 
                     today = date.today()
                     dt = datetime.strptime(f"{today} {timestamp_str}", "%Y-%m-%d %H:%M:%S")
@@ -362,7 +362,7 @@ class MemoryManager:
 
                 timestamp_str = last_turn.get("timestamp", "")
                 if isinstance(timestamp_str, str) and ":" in timestamp_str:
-                    from datetime import datetime, date
+                    from datetime import date, datetime
 
                     today = date.today()
                     dt = datetime.strptime(f"{today} {timestamp_str}", "%Y-%m-%d %H:%M:%S")
@@ -422,7 +422,7 @@ class MemoryManager:
                     timestamp_str = turn.get("timestamp", "")
                     if isinstance(timestamp_str, str) and ":" in timestamp_str:
                         # 转换 "HH:MM:SS" 格式为时间戳
-                        from datetime import datetime, date
+                        from datetime import date, datetime
 
                         today = date.today()
                         dt = datetime.strptime(f"{today} {timestamp_str}", "%Y-%m-%d %H:%M:%S")

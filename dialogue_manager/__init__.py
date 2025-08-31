@@ -6,9 +6,9 @@
 __version__ = "0.1.0"
 __author__ = "SmartHome DialogueManager Team"
 
+from .api_client import SiliconFlowClient
 from .engine import DialogueEngine
 from .intent import IntentRecognizer
 from .memory import MemoryManager
-from .api_client import SiliconFlowClient
 
 __all__ = ["DialogueEngine", "IntentRecognizer", "MemoryManager", "SiliconFlowClient"]

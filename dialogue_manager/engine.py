@@ -3,16 +3,16 @@
 负责多轮对话状态管理、会话流程控制和指令生成。
 """
 
-import time
 import logging
-from typing import Dict, List, Optional, Tuple
+import time
 from dataclasses import dataclass
 from enum import Enum
+from typing import Dict, List, Optional, Tuple
 
-from .intent import IntentRecognizer
-from .memory import MemoryManager
 from .api_client import SiliconFlowClient
 from .clarification import ClarificationAgent
+from .intent import IntentRecognizer
+from .memory import MemoryManager
 
 
 @dataclass

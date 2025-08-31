@@ -1,5 +1,6 @@
+from typing import Dict, List, Optional, Tuple
+
 import pytest
-from typing import List, Dict, Tuple, Optional
 
 # 引入被测模块
 from dialogue_manager import DialogueEngine, IntentRecognizer
