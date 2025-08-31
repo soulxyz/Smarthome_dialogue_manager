@@ -7,9 +7,12 @@ import sqlite3
 import json
 import time
 import logging
+import threading
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, asdict
 from pathlib import Path
+from contextlib import contextmanager
+from queue import Queue, Empty
 
 
 @dataclass
@@ -49,14 +52,86 @@ class DialogueRecord:
     context_snapshot: Dict[str, Any]
 
 
+class ConnectionPool:
+    """SQLite连接池"""
+    
+    def __init__(self, db_path: str, max_connections: int = 10):
+        self.db_path = db_path
+        self.max_connections = max_connections
+        self.pool = Queue(maxsize=max_connections)
+        self.lock = threading.Lock()
+        self.created_connections = 0
+        
+        # 预创建一些连接
+        for _ in range(min(3, max_connections)):
+            conn = self._create_connection()
+            self.pool.put(conn)
+    
+    def _create_connection(self) -> sqlite3.Connection:
+        """创建新的数据库连接"""
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=10000")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA mmap_size=268435456")  # 256MB
+        self.created_connections += 1
+        return conn
+    
+    @contextmanager
+    def get_connection(self):
+        """获取数据库连接的上下文管理器"""
+        conn = None
+        try:
+            # 尝试从池中获取连接
+            try:
+                conn = self.pool.get_nowait()
+            except Empty:
+                # 池中没有可用连接，创建新连接
+                with self.lock:
+                    if self.created_connections < self.max_connections:
+                        conn = self._create_connection()
+                    else:
+                        # 等待可用连接
+                        conn = self.pool.get(timeout=5)
+            
+            yield conn
+            
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            raise e
+        finally:
+            if conn:
+                try:
+                    # 将连接放回池中
+                    self.pool.put_nowait(conn)
+                except:
+                    # 池已满，关闭连接
+                    conn.close()
+                    with self.lock:
+                        self.created_connections -= 1
+    
+    def close_all(self):
+        """关闭所有连接"""
+        while not self.pool.empty():
+            try:
+                conn = self.pool.get_nowait()
+                conn.close()
+            except Empty:
+                break
+        self.created_connections = 0
+
+
 class MemoryManager:
     """记忆管理器"""
     
-    def __init__(self, db_path: str = "data/dialogues.db"):
+    def __init__(self, db_path: str = "data/dialogues.db", max_connections: int = 10):
         """初始化记忆管理器
         
         Args:
             db_path: 数据库文件路径
+            max_connections: 最大连接数
         """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -64,11 +139,12 @@ class MemoryManager:
         self.logger = logging.getLogger(__name__)
         # 会话级 PatternCache：{session_id: {intent: set(patterns)}}
         self.session_patterns: Dict[str, Dict[str, set]] = {}
+        self.pool = ConnectionPool(str(self.db_path), max_connections)
         self._init_database()
     
     def _init_database(self):
         """初始化数据库表结构"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self.pool.get_connection() as conn:
             cursor = conn.cursor()
             
             # 用户档案表
@@ -147,7 +223,7 @@ class MemoryManager:
             updated_at=current_time
         )
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self.pool.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT OR REPLACE INTO user_profiles 
@@ -174,7 +250,7 @@ class MemoryManager:
         Returns:
             Optional[UserProfile]: 用户档案，如果不存在则返回None
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self.pool.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT * FROM user_profiles WHERE user_id = ?",
@@ -200,7 +276,7 @@ class MemoryManager:
             user_id: 用户ID
             preferences: 新的偏好设置
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self.pool.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE user_profiles 
@@ -270,7 +346,7 @@ class MemoryManager:
             if hasattr(first_turn, 'timestamp'):  # DialogueTurn对象
                 start_time = first_turn.timestamp
                 end_time = last_turn.timestamp
-            else:  # 字典格式
+            elif isinstance(first_turn, dict):  # 字典格式
                 # 转换时间戳格式
                 timestamp_str = first_turn.get('timestamp', '')
                 if isinstance(timestamp_str, str) and ':' in timestamp_str:
@@ -289,6 +365,9 @@ class MemoryManager:
                     end_time = dt.timestamp()
                 else:
                     end_time = time.time()
+            else:  # 其他格式，使用当前时间
+                start_time = time.time()
+                end_time = time.time()
         else:
             start_time = time.time()
             end_time = time.time()
@@ -296,7 +375,7 @@ class MemoryManager:
         # 生成会话摘要
         summary = self._generate_session_summary(dialogue_history)
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self.pool.get_connection() as conn:
             cursor = conn.cursor()
             
             # 保存会话记录
@@ -377,7 +456,7 @@ class MemoryManager:
         Returns:
             List[DialogueRecord]: 对话记录列表
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self.pool.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT dr.* FROM dialogue_records dr
@@ -416,7 +495,7 @@ class MemoryManager:
         Returns:
             List[DialogueRecord]: 匹配的对话记录列表
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self.pool.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT dr.* FROM dialogue_records dr
@@ -466,11 +545,12 @@ class MemoryManager:
             if hasattr(turn, 'intent'):  # DialogueTurn对象
                 if turn.intent:
                     intents.append(turn.intent)
-            else:  # 字典格式
+            elif isinstance(turn, dict):  # 字典格式
                 intent_result = turn.get('intent_result', {})
                 intent = intent_result.get('intent')
                 if intent:
                     intents.append(intent)
+            # 其他格式跳过
         
         intent_counts = {}
         for intent in intents:
@@ -491,7 +571,7 @@ class MemoryManager:
         Returns:
             Dict: 统计信息
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self.pool.get_connection() as conn:
             cursor = conn.cursor()
             
             stats = {}
@@ -530,7 +610,7 @@ class MemoryManager:
         """
         cutoff_time = time.time() - (days_to_keep * 24 * 3600)
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self.pool.get_connection() as conn:
             cursor = conn.cursor()
             
             # 删除旧的对话记录
@@ -548,6 +628,19 @@ class MemoryManager:
             conn.commit()
             
         self.logger.info(f"Cleaned up records older than {days_to_keep} days")
+    
+    def close(self):
+        """关闭内存管理器，清理资源"""
+        self.pool.close_all()
+        self.logger.info("MemoryManager closed")
+    
+    def __enter__(self):
+        """上下文管理器入口"""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """上下文管理器出口"""
+        self.close()
 
     # ====== Session PatternCache APIs ======
     def add_pattern(self, session_id: str, intent: str, pattern: str):

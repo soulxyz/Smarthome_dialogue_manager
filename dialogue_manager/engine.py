@@ -15,6 +15,22 @@ from .api_client import SiliconFlowClient
 from .clarification import ClarificationAgent
 
 
+@dataclass
+class EngineConfig:
+    """对话引擎配置类"""
+    max_turns: int = 10
+    confidence_threshold: float = 0.7
+    model_name: str = "deepseek-chat"
+    enable_clarification: bool = True
+    session_timeout: int = 3600  # 会话超时时间（秒）
+    
+    def update(self, **kwargs):
+        """更新配置参数"""
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+
+
 class DialogueState(Enum):
     """对话状态枚举"""
     IDLE = "idle"  # 空闲状态
@@ -46,25 +62,34 @@ class DialogueTurn:
 class DialogueEngine:
     """对话引擎主类"""
     
-    def __init__(self, api_key: str, max_turns: int = 10):
+    def __init__(self, api_key: str, config: Optional[EngineConfig] = None):
         """初始化对话引擎
         
         Args:
             api_key: 硅基流动API密钥
-            max_turns: 最大对话轮数
+            config: 引擎配置对象
         """
+        self.config = config or EngineConfig()
         self.api_client = SiliconFlowClient(api_key)
-        self.intent_recognizer = IntentRecognizer()
+        self.intent_recognizer = IntentRecognizer(confidence_threshold=self.config.confidence_threshold)
         self.memory_manager = MemoryManager()
-        self.clarification_agent = ClarificationAgent(self.api_client, self.intent_recognizer)
+        self.clarification_agent = ClarificationAgent(
+            self.api_client, 
+            self.intent_recognizer,
+            confidence_threshold=self.config.confidence_threshold
+        )
         
-        self.max_turns = max_turns
         self.current_state = DialogueState.IDLE
         self.session_id = None
         self.dialogue_history: List[DialogueTurn] = []
         self.context = {}
         
         self.logger = logging.getLogger(__name__)
+        
+    def update_config(self, **kwargs):
+        """更新引擎配置"""
+        self.config.update(**kwargs)
+        self.logger.info(f"Engine config updated: {kwargs}")
         
     def start_session(self, user_id: str) -> str:
         """开始新的对话会话
@@ -133,7 +158,7 @@ class DialogueEngine:
                  debug_info["intent_result"] = intent_result
                  
                  # 判断是否需要澄清
-                 if intent_result["confidence"] < 0.7:  # 置信度阈值
+                 if intent_result["confidence"] < self.config.confidence_threshold:  # 置信度阈值
                      # 检查澄清轮次，避免重复澄清循环
                      clarification_rounds = self.context.get("clarification_rounds", 0)
                      if clarification_rounds >= 2:  # 最多澄清2轮

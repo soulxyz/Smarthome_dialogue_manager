@@ -1,0 +1,39 @@
+# 开发环境依赖
+# 安装: pip install -r requirements-dev.txt
+
+# 包含基础依赖
+-r requirements.txt
+
+# 额外的开发工具
+ipython>=8.15.0
+jupyter>=1.0.0
+notebook>=7.0.0
+
+# 性能分析
+memory-profiler>=0.61.0
+line-profiler>=4.1.0
+
+# 调试工具
+pdb++>=0.10.3
+icecream>=2.1.3
+
+# 文档生成
+sphinx>=7.1.0
+sphinx-rtd-theme>=1.3.0
+myst-parser>=2.0.0
+
+# 代码复杂度分析
+radon>=6.0.1
+xenon>=0.9.0
+
+# 依赖分析
+pipdeptree>=2.13.0
+pip-audit>=2.6.0
+
+# 环境管理
+virtualenv>=20.24.0
+pipenv>=2023.7.23
+
+# API文档
+fastapi>=0.103.0  # 如果需要API文档
+uvicorn>=0.23.0   # 如果需要API服务器

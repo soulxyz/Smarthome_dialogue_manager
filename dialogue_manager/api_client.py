@@ -47,7 +47,18 @@ class SiliconFlowClient:
         # 配置参数
         self.timeout = 30  # 请求超时时间（秒）
         self.max_retries = 3  # 最大重试次数
-        self.retry_delay = 1  # 重试延迟（秒）
+        self.retry_delay = 1  # 基础重试延迟（秒）
+        self.max_retry_delay = 60  # 最大重试延迟（秒）
+        self.rate_limit_delay = 5  # 速率限制基础延迟（秒）
+        
+        # 使用统计
+        self.stats = {
+            "total_requests": 0,
+            "successful_requests": 0,
+            "failed_requests": 0,
+            "total_tokens_used": 0,
+            "total_response_time": 0.0
+        }
         
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"Initialized SiliconFlow client with model: {self.model_id}")
@@ -117,6 +128,7 @@ class SiliconFlowClient:
                 payload[param] = kwargs[param]
         
         self.logger.info(f"Sending chat completion request with {len(messages)} messages")
+        self.stats["total_requests"] += 1
         
         # 执行请求（带重试机制）
         response = self._make_request_with_retry(
@@ -143,6 +155,12 @@ class SiliconFlowClient:
             if "usage" in data:
                 usage = data["usage"]
             
+            # 更新统计信息
+            self.stats["successful_requests"] += 1
+            self.stats["total_response_time"] += response_time
+            if usage.get("total_tokens"):
+                self.stats["total_tokens_used"] += usage["total_tokens"]
+            
             return APIResponse(
                 success=True,
                 content=content,
@@ -154,7 +172,8 @@ class SiliconFlowClient:
         else:
             # 处理错误响应
             error_msg = response.get("error", "Unknown API error")
-            self.logger.error(f"API request failed: {error_msg}")
+            self.logger.error(f"API request failed: {self._sanitize_error_message(error_msg)}")
+            self.stats["failed_requests"] += 1
             
             return APIResponse(
                 success=False,
@@ -216,17 +235,19 @@ class SiliconFlowClient:
                     
                     # 对于速率限制，使用更长的延迟
                     if attempt < self.max_retries:
-                        delay = self.retry_delay * (2 ** attempt)  # 指数退避
-                        self.logger.info(f"Retrying after {delay} seconds...")
+                        delay = min(self.rate_limit_delay * (2 ** attempt), self.max_retry_delay)
+                        self.logger.info(f"Rate limit hit, retrying after {delay} seconds...")
                         time.sleep(delay)
                         continue
                 elif response.status_code >= 500:  # 服务器错误
-                    error_msg = f"Server error (HTTP {response.status_code}): {response.text}"
+                    error_msg = f"Server error (HTTP {response.status_code}): {self._sanitize_error_message(response.text)}"
                     self.logger.warning(error_msg)
                     last_error = error_msg
                     
                     if attempt < self.max_retries:
-                        time.sleep(self.retry_delay)
+                        delay = min(self.retry_delay * (2 ** attempt), self.max_retry_delay)
+                        self.logger.info(f"Server error, retrying after {delay} seconds...")
+                        time.sleep(delay)
                         continue
                 else:  # 客户端错误（4xx）
                     try:
@@ -246,16 +267,20 @@ class SiliconFlowClient:
                 last_error = error_msg
                 
                 if attempt < self.max_retries:
-                    time.sleep(self.retry_delay)
+                    delay = min(self.retry_delay * (1.5 ** attempt), self.max_retry_delay)
+                    self.logger.info(f"Timeout, retrying after {delay} seconds...")
+                    time.sleep(delay)
                     continue
                     
             except requests.exceptions.ConnectionError as e:
-                error_msg = f"Connection error: {e}"
+                error_msg = f"Connection error: {self._sanitize_error_message(str(e))}"
                 self.logger.warning(error_msg)
                 last_error = error_msg
                 
                 if attempt < self.max_retries:
-                    time.sleep(self.retry_delay)
+                    delay = min(self.retry_delay * (2 ** attempt), self.max_retry_delay)
+                    self.logger.info(f"Connection error, retrying after {delay} seconds...")
+                    time.sleep(delay)
                     continue
                     
             except Exception as e:
@@ -388,17 +413,52 @@ class SiliconFlowClient:
         
         self.logger.info(f"Updated client config: {kwargs}")
     
+    def _sanitize_error_message(self, message: str) -> str:
+        """脱敏错误消息，移除敏感信息
+        
+        Args:
+            message: 原始错误消息
+            
+        Returns:
+            str: 脱敏后的错误消息
+        """
+        import re
+        
+        # 移除API密钥
+        message = re.sub(r'Bearer [A-Za-z0-9\-_]+', 'Bearer [REDACTED]', message)
+        message = re.sub(r'api[_-]?key["\s]*[:=]["\s]*[A-Za-z0-9\-_]+', 'api_key: [REDACTED]', message, flags=re.IGNORECASE)
+        
+        # 移除可能的用户敏感信息
+        message = re.sub(r'\b\d{11}\b', '[PHONE_REDACTED]', message)  # 手机号
+        message = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', '[EMAIL_REDACTED]', message)  # 邮箱
+        
+        return message
+    
     def get_usage_statistics(self) -> Dict:
-        """获取使用统计（需要在实际使用中累积）
+        """获取使用统计信息
         
         Returns:
             Dict: 使用统计信息
         """
-        # TODO: 实现使用统计收集
+        total_requests = self.stats["total_requests"]
+        successful_requests = self.stats["successful_requests"]
+        
         return {
+            "total_requests": total_requests,
+            "successful_requests": successful_requests,
+            "failed_requests": self.stats["failed_requests"],
+            "success_rate": (successful_requests / total_requests * 100) if total_requests > 0 else 0.0,
+            "total_tokens_used": self.stats["total_tokens_used"],
+            "average_response_time": (self.stats["total_response_time"] / successful_requests) if successful_requests > 0 else 0.0
+        }
+    
+    def reset_statistics(self):
+        """重置使用统计"""
+        self.stats = {
             "total_requests": 0,
             "successful_requests": 0,
             "failed_requests": 0,
             "total_tokens_used": 0,
-            "average_response_time": 0.0
+            "total_response_time": 0.0
         }
+        self.logger.info("Usage statistics reset")
