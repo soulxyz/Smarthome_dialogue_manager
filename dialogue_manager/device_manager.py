@@ -40,13 +40,25 @@ class LightDevice(Device):
     def __init__(self, name: str, room: str):
         super().__init__(device_type="灯", name=name, room=room, state={"on": False, "brightness": 50})
 
+    def _parse_int_like(self, value: Any, err_msg: str) -> Tuple[bool, Optional[int]]:
+        if value is None:
+            return False, None
+        try:
+            if isinstance(value, (int, float)):
+                return True, int(value)
+            if isinstance(value, str):
+                v = int(float(value.strip()))
+                return True, v
+        except Exception:
+            return False, None
+        return False, None
+
     def adjust(self, attribute: str, value: Any) -> Tuple[bool, str]:
         if attribute in ("亮度", "brightness"):
-            try:
-                v = int(value)
-            except Exception:
-                return False, f"亮度取值无效"
-            v = max(0, min(100, v))
+            ok, v = self._parse_int_like(value, "亮度取值无效")
+            if not ok:
+                return False, "亮度取值无效"
+            v = max(0, min(100, int(v)))
             self.state["brightness"] = v
             return True, f"已将{self.room}{self.name}亮度设置为{v}%"
         return super().adjust(attribute, value)
@@ -60,21 +72,32 @@ class AirConditionerDevice(Device):
     def __init__(self, name: str, room: str):
         super().__init__(device_type="空调", name=name, room=room, state={"on": False, "temperature": 26, "mode": "自动", "fan_speed": 2})
 
+    def _parse_int_like(self, value: Any) -> Tuple[bool, Optional[int]]:
+        if value is None:
+            return False, None
+        try:
+            if isinstance(value, (int, float)):
+                return True, int(value)
+            if isinstance(value, str):
+                v = int(float(value.strip()))
+                return True, v
+        except Exception:
+            return False, None
+        return False, None
+
     def adjust(self, attribute: str, value: Any) -> Tuple[bool, str]:
         if attribute in ("温度", "temperature"):
-            try:
-                v = int(value)
-            except Exception:
+            ok, v = self._parse_int_like(value)
+            if not ok:
                 return False, "温度取值无效"
-            v = max(16, min(30, v))
+            v = max(16, min(30, int(v)))
             self.state["temperature"] = v
             return True, f"已将{self.room}{self.name}温度设置为{v}度"
         if attribute in ("风速", "fan_speed"):
-            try:
-                v = int(value)
-            except Exception:
+            ok, v = self._parse_int_like(value)
+            if not ok:
                 return False, "风速取值无效"
-            v = max(1, min(5, v))
+            v = max(1, min(5, int(v)))
             self.state["fan_speed"] = v
             return True, f"已将{self.room}{self.name}风速设置为{v}档"
         if attribute in ("模式", "mode"):
@@ -94,21 +117,32 @@ class TVDevice(Device):
     def __init__(self, name: str, room: str):
         super().__init__(device_type="电视", name=name, room=room, state={"on": False, "volume": 20, "channel": 1})
 
+    def _parse_int_like(self, value: Any) -> Tuple[bool, Optional[int]]:
+        if value is None:
+            return False, None
+        try:
+            if isinstance(value, (int, float)):
+                return True, int(value)
+            if isinstance(value, str):
+                v = int(float(value.strip()))
+                return True, v
+        except Exception:
+            return False, None
+        return False, None
+
     def adjust(self, attribute: str, value: Any) -> Tuple[bool, str]:
         if attribute in ("音量", "volume"):
-            try:
-                v = int(value)
-            except Exception:
+            ok, v = self._parse_int_like(value)
+            if not ok:
                 return False, "音量取值无效"
-            v = max(0, min(100, v))
+            v = max(0, min(100, int(v)))
             self.state["volume"] = v
             return True, f"已将{self.room}{self.name}音量设置为{v}"
         if attribute in ("频道", "channel"):
-            try:
-                v = int(value)
-            except Exception:
+            ok, v = self._parse_int_like(value)
+            if not ok:
                 return False, "频道取值无效"
-            v = max(1, v)
+            v = max(1, int(v))
             self.state["channel"] = v
             return True, f"已将{self.room}{self.name}切换到第{v}频道"
         return super().adjust(attribute, value)
@@ -122,13 +156,25 @@ class FanDevice(Device):
     def __init__(self, name: str, room: str):
         super().__init__(device_type="风扇", name=name, room=room, state={"on": False, "speed": 2})
 
+    def _parse_int_like(self, value: Any) -> Tuple[bool, Optional[int]]:
+        if value is None:
+            return False, None
+        try:
+            if isinstance(value, (int, float)):
+                return True, int(value)
+            if isinstance(value, str):
+                v = int(float(value.strip()))
+                return True, v
+        except Exception:
+            return False, None
+        return False, None
+
     def adjust(self, attribute: str, value: Any) -> Tuple[bool, str]:
         if attribute in ("风速", "speed", "fan_speed"):
-            try:
-                v = int(value)
-            except Exception:
+            ok, v = self._parse_int_like(value)
+            if not ok:
                 return False, "风速取值无效"
-            v = max(1, min(5, v))
+            v = max(1, min(5, int(v)))
             self.state["speed"] = v
             return True, f"已将{self.room}{self.name}风速设置为{v}档"
         return super().adjust(attribute, value)
@@ -150,15 +196,15 @@ class DeviceManager:
     # ---------- 预设 ----------
     def _build_default_preset(self):
         # 客厅
-        self._register(LightDevice(name="客厅灯", room="客厅"))
+        self._register(LightDevice(name="灯", room="客厅"))
         self._register(TVDevice(name="电视", room="客厅"))
         self._register(AirConditionerDevice(name="空调", room="客厅"))
         self._register(FanDevice(name="风扇", room="客厅"))
         # 主卧
-        self._register(LightDevice(name="卧室灯", room="主卧"))
+        self._register(LightDevice(name="灯", room="主卧"))
         self._register(AirConditionerDevice(name="空调", room="主卧"))
         # 次卧
-        self._register(LightDevice(name="次卧灯", room="次卧"))
+        self._register(LightDevice(name="灯", room="次卧"))
         self._register(FanDevice(name="风扇", room="次卧"))
 
     def _register(self, device: Device):
@@ -169,10 +215,11 @@ class DeviceManager:
     # ---------- 查询与执行 ----------
     def find_device(self, device_type: str, room: Optional[str]) -> Optional[Device]:
         if room:
-            # 精确匹配房间
+            # 精确匹配房间；若未找到则不回退
             devs = self._index.get((device_type, room))
             if devs:
                 return devs[0]
+            return None
         # 未指定房间，若只有一个同类设备则返回，否则优先客厅
         all_of_type = [d for d in self.devices if d.device_type == device_type]
         if len(all_of_type) == 1:

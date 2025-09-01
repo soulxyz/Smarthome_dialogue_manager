@@ -340,7 +340,7 @@ class DialogueEngine:
                 return f"当前设备状态如下：{device_exec_summary}"
             if intent_result.get("intent") == "device_control" and device_exec_summary:
                 debug_info["device_summary"] = device_exec_summary
-                return device_exec_summary
+                return f"好的，{device_exec_summary}"
 
             # 将确定性结果注入到提示中，提高回复贴合度（非设备相关意图时保留）
             if device_exec_summary:

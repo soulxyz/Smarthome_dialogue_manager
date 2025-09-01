@@ -136,7 +136,7 @@ def test_perform_action_increase_decrease(manager: DeviceManager):
     initial_temp = ac.state["temperature"]
     result = manager.perform_action("调高", "空调", "客厅", attribute="温度")
     assert result["success"]
-    assert result["state"]["temperature"] == initial_temp + 5
+    assert result["state"]["temperature"] == min(initial_temp + 5, 30)
 
     # Decrease light brightness
     light = manager.find_device("灯", "次卧")
@@ -144,6 +144,7 @@ def test_perform_action_increase_decrease(manager: DeviceManager):
     result = manager.perform_action("调低", "灯", "次卧", attribute="亮度")
     assert result["success"]
     assert result["state"]["brightness"] == 45
+
 
 def test_query_status(manager: DeviceManager):
     """Tests the query_status method."""
