@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, Optional, Tuple, List, Callable
+from datetime import datetime
+from copy import deepcopy
 
 
 # 基础设备抽象
@@ -192,6 +194,12 @@ class DeviceManager:
         self.devices: List[Device] = []
         self._index: Dict[Tuple[str, str], List[Device]] = {}
         self._build_default_preset()
+        # 版本与事件回调
+        self._version: int = 0
+        self._last_updated_at: Optional[str] = None
+        self._callbacks: List[Callable[[Dict[str, Any]], None]] = []
+        # 最近一次快照（便于做默认对比）
+        self._last_snapshot: Dict[str, Any] = self.snapshot()
 
     # ---------- 预设 ----------
     def _build_default_preset(self):
@@ -211,6 +219,40 @@ class DeviceManager:
         self.devices.append(device)
         key = (device.device_type, device.room)
         self._index.setdefault(key, []).append(device)
+
+    # ---------- 事件/版本 ----------
+    def register_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        """注册设备事件回调. 回调签名: fn(event: Dict[str, Any]) -> None"""
+        if callback and callback not in self._callbacks:
+            self._callbacks.append(callback)
+
+    def unregister_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        if callback in self._callbacks:
+            self._callbacks.remove(callback)
+
+    def _bump_version(self) -> None:
+        self._version += 1
+        self._last_updated_at = datetime.now().isoformat(timespec="seconds")
+
+    def _emit_event(self, event_type: str, payload: Dict[str, Any]) -> None:
+        event = {
+            "event": event_type,
+            "version": self._version,
+            "timestamp": self._last_updated_at,
+            **payload,
+        }
+        for cb in list(self._callbacks):
+            try:
+                cb(event)
+            except Exception:
+                # 单个回调出错不影响整体
+                continue
+
+    def get_version(self) -> int:
+        return self._version
+
+    def get_last_updated(self) -> Optional[str]:
+        return self._last_updated_at
 
     # ---------- 查询与执行 ----------
     def find_device(self, device_type: str, room: Optional[str]) -> Optional[Device]:
@@ -244,6 +286,8 @@ class DeviceManager:
             return {"success": False, "message": f"未找到{room or ''}的{device_type}"}
 
         action = self._normalize_action(action_keyword)
+        # 记录前快照（仅针对该设备）
+        before_state = deepcopy(device.state)
         if action == "turn_on":
             ok, msg = device.turn_on()
         elif action == "turn_off":
@@ -269,6 +313,28 @@ class DeviceManager:
         else:
             ok, msg = False, "暂不支持的操作"
 
+        # 若状态变更成功：更新版本、触发事件并刷新最近快照
+        if ok:
+            self._bump_version()
+            after_state = deepcopy(device.state)
+            self._emit_event(
+                "state_changed",
+                {
+                    "device": {
+                        "device_type": device.device_type,
+                        "room": device.room,
+                        "name": device.name,
+                    },
+                    "action": action,
+                    "attribute": attribute,
+                    "before_state": before_state,
+                    "after_state": after_state,
+                    "message": msg,
+                },
+            )
+            # 更新全局最近快照
+            self._last_snapshot = self.snapshot()
+
         return {
             "success": ok,
             "message": msg,
@@ -286,8 +352,12 @@ class DeviceManager:
             else:
                 targets = [d for d in self.devices if d.device_type == device_type]
         else:
-            # 全量
-            targets = self.devices
+            # 当仅指定房间时，按房间过滤
+            if room:
+                targets = [d for d in self.devices if d.room == room]
+            else:
+                # 全量
+                targets = self.devices
 
         if not targets:
             return {"success": False, "message": "未找到对应设备"}
@@ -300,6 +370,58 @@ class DeviceManager:
             f"{d.room}-{d.device_type}": {"on": d.state.get("on"), **{k: v for k, v in d.state.items() if k != "on"}}
             for d in self.devices
         }
+
+    def snapshot_with_meta(self) -> Dict[str, Any]:
+        """返回带元信息的快照，不破坏 snapshot() 兼容性"""
+        return {
+            "version": self._version,
+            "timestamp": self._last_updated_at,
+            "data": self.snapshot(),
+        }
+
+    def snapshot_diff(self, old_snapshot: Optional[Dict[str, Any]] = None, new_snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """计算两个快照的差异。
+        - 如果未提供任何参数，则默认对比 self._last_snapshot 与当前快照。
+        - 兼容传入带有 {version,timestamp,data} 的结构或直接传入 snapshot() 的纯数据结构。
+        """
+        old_data = old_snapshot if old_snapshot is not None else self._last_snapshot
+        new_data = new_snapshot if new_snapshot is not None else self.snapshot()
+        if isinstance(old_data, dict) and "data" in old_data:
+            old_data = old_data.get("data", {})
+        if isinstance(new_data, dict) and "data" in new_data:
+            new_data = new_data.get("data", {})
+        diff = self._compute_diff(old_data, new_data)
+        return {
+            "base_version": self._version,  # 当前版本（用于参考）
+            "added": diff["added"],
+            "removed": diff["removed"],
+            "changed": diff["changed"],
+        }
+
+    @staticmethod
+    def _compute_diff(old: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
+        old_keys = set(old.keys())
+        new_keys = set(new.keys())
+        added = {k: new[k] for k in (new_keys - old_keys)}
+        removed = {k: old[k] for k in (old_keys - new_keys)}
+        common = old_keys & new_keys
+        changed: Dict[str, Any] = {}
+        for k in common:
+            before = old[k] or {}
+            after = new[k] or {}
+            # 对比字段
+            fields = set(before.keys()) | set(after.keys())
+            field_changes = {}
+            for f in fields:
+                if before.get(f) != after.get(f):
+                    field_changes[f] = {"from": before.get(f), "to": after.get(f)}
+            if field_changes:
+                changed[k] = {
+                    "before": before,
+                    "after": after,
+                    "changed_fields": field_changes,
+                }
+        return {"added": added, "removed": removed, "changed": changed}
 
     # ---------- 工具 ----------
     @staticmethod
@@ -327,7 +449,6 @@ class DeviceManager:
             "减小": "decrease",
         }
         return mapping.get(action_keyword, action_keyword)
-
     @staticmethod
     def _read_attribute(device: Device, attribute: Optional[str]) -> Any:
         if not attribute:

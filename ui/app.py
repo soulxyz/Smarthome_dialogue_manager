@@ -61,6 +61,32 @@ def init_session_state():
     if "queued_input" not in st.session_state:
         st.session_state.queued_input = None
 
+    # 设备事件与快照比较所需的会话状态
+    if "device_events" not in st.session_state:
+        st.session_state.device_events = []
+    if "device_callback_registered" not in st.session_state:
+        st.session_state.device_callback_registered = False
+    if "snapshot_baseline" not in st.session_state:
+        st.session_state.snapshot_baseline = None
+
+    # 注册设备事件回调（只注册一次）
+    if not st.session_state.device_callback_registered:
+        try:
+            engine = st.session_state.dialogue_engine
+            dm = getattr(engine, "device_manager", None)
+            if dm is not None:
+                def _on_device_event(evt: dict):
+                    # 只记录最近500条
+                    st.session_state.device_events.append(evt)
+                    if len(st.session_state.device_events) > 500:
+                        st.session_state.device_events = st.session_state.device_events[-500:]
+                dm.register_callback(_on_device_event)
+                st.session_state.device_callback_registered = True
+                # 保存引用，防止被GC
+                st.session_state._device_event_callback = _on_device_event
+        except Exception:
+            pass
+
 
 def display_header():
     """显示页面头部."""
@@ -545,6 +571,116 @@ def display_statistics():
             st.json({"processing_times": stats["processing_times"]})
 
 
+def display_device_panel():
+    """设备概览 + 快照对比 初版"""
+    st.header("🧰 设备面板")
+    engine = st.session_state.dialogue_engine
+    dm = getattr(engine, "device_manager", None)
+
+    if dm is None:
+        st.warning("设备管理器未启用")
+        return
+
+    # 顶部指标
+    meta = dm.snapshot_with_meta()
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("版本", meta.get("version", 0))
+    with col2:
+        st.metric("最近更新时间", meta.get("timestamp") or "—")
+    with col3:
+        auto_refresh = st.checkbox("自动刷新(2s)", value=False, help="用于观察实时变化")
+        if auto_refresh:
+            # 简化处理：提供一次性刷新按钮，避免依赖不可用的 st.autorefresh
+            if st.button("立即刷新一次", key="dev_panel_refresh_once"):
+                st.rerun()
+            st.autorefresh(interval=2000, key="dev_panel_autorefresh")
+
+    # 设备概览
+    st.subheader("设备概览")
+    data = meta.get("data", {})
+    rows = []
+    for key, attrs in data.items():
+        room, dtype = key.split("-", 1) if "-" in key else ("", key)
+        row = {"房间": room, "设备类型": dtype, "开启": attrs.get("on")}
+        for k, v in attrs.items():
+            if k != "on":
+                row[k] = v
+        rows.append(row)
+    try:
+        df = pd.DataFrame(rows)
+        st.dataframe(df, use_container_width=True)
+    except Exception:
+        st.json(data)
+
+    # 快照对比
+    st.subheader("快照对比")
+    colA, colB, colC = st.columns([1, 1, 2])
+    with colA:
+        if st.button("保存当前为基准(A)"):
+            st.session_state.snapshot_baseline = dm.snapshot_with_meta()
+            st.success("已保存当前快照为基准(A)")
+    with colB:
+        if st.button("清空基准"):
+            st.session_state.snapshot_baseline = None
+            st.info("已清空基准")
+    with colC:
+        st.caption("请选择左侧操作保存基准后，再点击下方按钮计算差异")
+
+    baseline = st.session_state.get("snapshot_baseline")
+    if baseline:
+        st.info(
+            f"基准版本: v{baseline.get('version')} @ {baseline.get('timestamp') or '—'}"
+        )
+        if st.button("计算与当前快照(B)的差异"):
+            diff = dm.snapshot_diff(baseline, dm.snapshot_with_meta())
+            # 展示差异
+            added = diff.get("added", {})
+            removed = diff.get("removed", {})
+            changed = diff.get("changed", {})
+
+            if not added and not removed and not changed:
+                st.success("无变化 ✅")
+            else:
+                if added:
+                    with st.expander("新增设备"):
+                        st.json(added)
+                if removed:
+                    with st.expander("移除设备"):
+                        st.json(removed)
+                if changed:
+                    st.subheader("变更详情")
+                    for dev_key, detail in changed.items():
+                        with st.expander(dev_key):
+                            st.json(detail)
+
+    # 事件日志
+    st.subheader("事件日志（最近50条）")
+    events = st.session_state.get("device_events", [])[-50:]
+    if events:
+        try:
+            # 扁平化事件，适合表格展示
+            flat_rows = []
+            for e in events:
+                dev = (e.get("device") or {})
+                flat_rows.append({
+                    "时间": e.get("timestamp"),
+                    "版本": e.get("version"),
+                    "事件": e.get("event"),
+                    "房间": dev.get("room"),
+                    "设备类型": dev.get("device_type"),
+                    "设备名": dev.get("name"),
+                    "动作": e.get("action"),
+                    "属性": e.get("attribute"),
+                    "消息": e.get("message"),
+                })
+            st.dataframe(pd.DataFrame(flat_rows), use_container_width=True)
+        except Exception:
+            st.json(events)
+    else:
+        st.info("暂无事件")
+
+
 def main():
     """主函数."""
     # 配置页面设置（必须在任何Streamlit调用之前）
@@ -557,7 +693,7 @@ def main():
     display_sidebar()
 
     # 主要内容区域
-    tab1, tab2, tab3 = st.tabs(["💬 对话", "🔍 调试", "📊 统计"])
+    tab1, tab2, tab3, tab4 = st.tabs(["💬 对话", "🔍 调试", "📊 统计", "🧰 设备"])
 
     with tab1:
         display_chat_interface()
@@ -567,6 +703,9 @@ def main():
 
     with tab3:
         display_statistics()
+
+    with tab4:
+        display_device_panel()
 
     # 页脚信息
     st.markdown("---")
