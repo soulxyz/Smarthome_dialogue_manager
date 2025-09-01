@@ -13,6 +13,7 @@ from .api_client import SiliconFlowClient
 from .clarification import ClarificationAgent
 from .intent import IntentRecognizer
 from .memory import MemoryManager
+from .device_manager import DeviceManager
 
 
 @dataclass
@@ -24,6 +25,7 @@ class EngineConfig:
     model_name: str = "deepseek-chat"
     enable_clarification: bool = True
     session_timeout: int = 3600  # 会话超时时间（秒）
+    enable_device_manager: bool = True  # 是否启用设备管理器
 
     def update(self, **kwargs):
         """更新配置参数"""
@@ -79,6 +81,8 @@ class DialogueEngine:
         self.clarification_agent = ClarificationAgent(
             self.api_client, self.intent_recognizer, confidence_threshold=self.config.confidence_threshold
         )
+        # 设备管理器
+        self.device_manager = DeviceManager() if getattr(self.config, 'enable_device_manager', False) else None
 
         self.current_state = DialogueState.IDLE
         self.session_id = None
@@ -301,6 +305,47 @@ class DialogueEngine:
         """
         try:
             messages = self._build_messages(intent_result)
+
+            # 尝试与设备管理器交互，提前得到确定性执行反馈
+            device_exec_summary = None
+            if self.device_manager and intent_result.get("intent") in {"device_control", "query_status"}:
+                try:
+                    original_text = intent_result.get("original_text", "")
+                    room = self._extract_room(original_text)
+                    device_type = self._extract_first_entity(intent_result.get("entities", []), "device")
+                    action_kw = self._extract_first_entity(intent_result.get("entities", []), "action")
+                    number_value = self._extract_number_value(intent_result.get("entities", []), original_text)
+                    attribute = self._extract_attribute(original_text)
+
+                    if intent_result.get("intent") == "device_control" and device_type and action_kw:
+                        exec_res = self.device_manager.perform_action(
+                            action_keyword=action_kw,
+                            device_type=device_type,
+                            room=room,
+                            attribute=attribute,
+                            number_value=number_value,
+                        )
+                        debug_info["device_action_result"] = exec_res
+                        device_exec_summary = exec_res.get("message")
+                    elif intent_result.get("intent") == "query_status":
+                        q_res = self.device_manager.query_status(device_type=device_type, room=room)
+                        debug_info["device_query_result"] = q_res
+                        device_exec_summary = q_res.get("message")
+                except Exception as e:
+                    self.logger.warning(f"设备管理器交互失败: {e}")
+
+            # 方案A：对设备相关意图，优先返回确定性结果，避免被模型覆盖，同时记录供后续轮次使用
+            if intent_result.get("intent") == "query_status" and device_exec_summary:
+                debug_info["device_summary"] = device_exec_summary
+                return f"当前设备状态如下：{device_exec_summary}"
+            if intent_result.get("intent") == "device_control" and device_exec_summary:
+                debug_info["device_summary"] = device_exec_summary
+                return device_exec_summary
+
+            # 将确定性结果注入到提示中，提高回复贴合度（非设备相关意图时保留）
+            if device_exec_summary:
+                messages.append({"role": "system", "content": f"设备执行/查询结果: {device_exec_summary}"})
+
             api_response = self.api_client.chat_completion(messages)
             debug_info["api_calls"].append(
                 {
@@ -314,9 +359,12 @@ class DialogueEngine:
             )
 
             if api_response.success:
-                return api_response.content or "好的，我明白了。"
+                return api_response.content or (device_exec_summary or "好的，我明白了。")
             else:
                 self.logger.error(f"API调用失败: {api_response.error_message}")
+                # 退化为确定性反馈
+                if device_exec_summary:
+                    return device_exec_summary
                 return "抱歉，我现在无法处理您的请求，请稍后再试。"
         except Exception as e:
             self.logger.error(f"生成响应时出错: {e}")
@@ -336,6 +384,9 @@ class DialogueEngine:
         # 系统提示
         system_prompt = "你是一个智能家居助手，负责理解用户指令并控制家电设备。请用简洁、友好的语言回复用户。"
         messages.append({"role": "system", "content": system_prompt})
+        # 向模型同步上一次的设备执行/查询结果，增强其对真实状态的感知
+        if self.context.get("last_device_result"):
+            messages.append({"role": "system", "content": f"上次设备执行/查询结果: {self.context['last_device_result']}"})
 
         # 历史对话（最近3轮）
         for turn in self.dialogue_history[-3:]:
@@ -379,6 +430,23 @@ class DialogueEngine:
             "last_possible_intents": intent_result.get("possible_intents", []),
             "turn_count": len(self.dialogue_history),
         }
+        # 注入设备状态快照（若启用设备管理器）
+        if self.device_manager:
+            try:
+                updates["device_snapshot"] = self.device_manager.snapshot()
+            except Exception as e:
+                self.logger.debug(f"设备快照失败: {e}")
+        # 记录设备执行/查询的最后摘要，供下一轮同步给模型
+        last_msg = None
+        if isinstance(debug_info.get("device_action_result"), dict):
+            last_msg = debug_info["device_action_result"].get("message")
+        if not last_msg and isinstance(debug_info.get("device_query_result"), dict):
+            last_msg = debug_info["device_query_result"].get("message")
+        if not last_msg and debug_info.get("device_summary"):
+            last_msg = debug_info.get("device_summary")
+        if last_msg:
+            updates["last_device_result"] = last_msg
+
         self.context.update(updates)
         debug_info["context_updates"] = updates
 
@@ -408,3 +476,45 @@ class DialogueEngine:
         self.current_state = DialogueState.IDLE
         self.dialogue_history.clear()
         self.context.clear()
+
+    # ---------- 辅助解析 ----------
+    def _extract_first_entity(self, entities: List[Dict], entity_type: str) -> Optional[str]:
+        for e in entities:
+            if isinstance(e, dict) and e.get("entity_type") == entity_type:
+                return e.get("value")
+        return None
+
+    def _extract_number_value(self, entities: List[Dict], text: str) -> Optional[int]:
+        for e in entities:
+            if isinstance(e, dict) and e.get("entity_type") == "number":
+                try:
+                    return int(e.get("value"))
+                except Exception:
+                    continue
+        # 兜底：直接找首个数字
+        import re as _re
+        m = _re.search(r"(\d+)", text or "")
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                return None
+        return None
+
+    def _extract_attribute(self, text: str) -> Optional[str]:
+        text = text or ""
+        for attr in ["温度", "亮度", "音量", "风速"]:
+            if attr in text:
+                return attr
+        return None
+
+    def _extract_room(self, text: str) -> Optional[str]:
+        text = text or ""
+        # 简单房间解析及同义归一
+        candidates = ["客厅", "主卧", "次卧", "卧室", "厨房", "书房", "阳台"]
+        for c in candidates:
+            if c in text:
+                if c == "卧室":
+                    return "主卧"  # 归一为主卧，避免找不到设备
+                return c
+        return None
