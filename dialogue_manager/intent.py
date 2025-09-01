@@ -120,8 +120,8 @@ class IntentRecognizer:
 
         # 动作实体模式
         self.action_entities = {
-            "开启": ["打开", "开启", "启动", "开", "打开"],
-            "关闭": ["关闭", "关掉", "关", "停止", "关掉"],
+            "开启": ["打开", "开启", "启动", "开"],
+            "关闭": ["关闭", "关掉", "关", "停止"],
             "调节": ["调节", "设置", "调到", "调整"],
             "增加": ["增加", "提高", "调高", "加大"],
             "减少": ["减少", "降低", "调低", "减小"],
@@ -199,11 +199,22 @@ class IntentRecognizer:
         return processed
 
     def set_session_patterns(self, patterns: Dict[str, List[str]]):
-        """注入会话级自学习正则模式"""
+        """注入会话级自学习正则模式.
+
+        Args:
+            patterns: 会话模式字典
+        """
         self.session_patterns = patterns or {}
 
     def _classify_intent(self, user_input: str) -> Dict[str, float]:
-        """意图分类"""
+        """意图分类.
+
+        Args:
+            user_input: 用户输入
+
+        Returns:
+            Dict[str, float]: 意图分数
+        """
         scores = {intent.value: 0.0 for intent in IntentType}
 
         # 设备控制意图
@@ -245,66 +256,92 @@ class IntentRecognizer:
         return scores
 
     def _extract_entities(self, user_input: str) -> List[Entity]:
-        """实体抽取"""
+        """实体抽取, 避免重叠实体"""
         entities = []
+        found_spans = []
 
-        # 抽取设备实体
+        # 1. 组合设备和动作实体关键词
+        all_keywords = {}
         for device_type, keywords in self.device_entities.items():
-            for keyword in keywords:
-                if keyword in user_input:
-                    start_pos = user_input.find(keyword)
-                    entity = Entity(
-                        name=keyword,
-                        value=device_type,
-                        entity_type="device",
-                        confidence=0.9,
-                        start_pos=start_pos,
-                        end_pos=start_pos + len(keyword),
-                    )
-                    entities.append(entity)
+            for keyword in set(keywords):
+                all_keywords[keyword] = ("device", device_type, 0.9)
 
-        # 抽取动作实体
         for action_type, keywords in self.action_entities.items():
-            for keyword in keywords:
-                if keyword in user_input:
-                    start_pos = user_input.find(keyword)
+            for keyword in set(keywords):
+                all_keywords[keyword] = ("action", action_type, 0.8)
+
+        # 按长度降序排序关键词，以优先匹配长实体
+        sorted_keywords = sorted(all_keywords.keys(), key=len, reverse=True)
+
+        # 2. 抽取设备和动作实体
+        for keyword in sorted_keywords:
+            entity_type, value, confidence = all_keywords[keyword]
+            for match in re.finditer(re.escape(keyword), user_input):
+                start, end = match.span()
+
+                # 检查此范围是否与已找到的实体范围重叠
+                is_overlapping = False
+                for found_start, found_end in found_spans:
+                    if start < found_end and end > found_start:
+                        is_overlapping = True
+                        break
+
+                if not is_overlapping:
                     entity = Entity(
                         name=keyword,
-                        value=action_type,
-                        entity_type="action",
-                        confidence=0.8,
-                        start_pos=start_pos,
-                        end_pos=start_pos + len(keyword),
+                        value=value,
+                        entity_type=entity_type,
+                        confidence=confidence,
+                        start_pos=start,
+                        end_pos=end,
                     )
                     entities.append(entity)
+                    found_spans.append((start, end))
 
-        # 抽取数值实体（温度、时间等）
+        # 3. 抽取数值实体
         number_pattern = r"(\d+)\s*(度|点|小时|分钟|%|档)"
         for match in re.finditer(number_pattern, user_input):
-            entity = Entity(
-                name=match.group(0),
-                value=match.group(1),
-                entity_type="number",
-                confidence=0.9,
-                start_pos=match.start(),
-                end_pos=match.end(),
-            )
-            entities.append(entity)
-            
-        # 抽取地点实体
-        location_keywords = ["北京", "上海", "广州", "深圳", "杭州", "南京", "武汉", "成都", "重庆", "西安"]
-        for location in location_keywords:
-            if location in user_input:
-                start_pos = user_input.find(location)
+            start, end = match.span()
+            is_overlapping = False
+            for found_start, found_end in found_spans:
+                if start < found_end and end > found_start:
+                    is_overlapping = True
+                    break
+
+            if not is_overlapping:
                 entity = Entity(
-                    name=location,
-                    value=location,
-                    entity_type="location",
+                    name=match.group(0),
+                    value=match.group(1),
+                    entity_type="number",
                     confidence=0.9,
-                    start_pos=start_pos,
-                    end_pos=start_pos + len(location),
+                    start_pos=start,
+                    end_pos=end,
                 )
                 entities.append(entity)
+                found_spans.append((start, end))
+
+        # 4. 抽取地点实体
+        location_keywords = ["北京", "上海", "广州", "深圳", "杭州", "南京", "武汉", "成都", "重庆", "西安"]
+        for location in sorted(location_keywords, key=len, reverse=True):
+            for match in re.finditer(re.escape(location), user_input):
+                start, end = match.span()
+                is_overlapping = False
+                for found_start, found_end in found_spans:
+                    if start < found_end and end > found_start:
+                        is_overlapping = True
+                        break
+
+                if not is_overlapping:
+                    entity = Entity(
+                        name=location,
+                        value=location,
+                        entity_type="location",
+                        confidence=0.9,
+                        start_pos=start,
+                        end_pos=end,
+                    )
+                    entities.append(entity)
+                    found_spans.append((start, end))
 
         return entities
 
@@ -388,11 +425,19 @@ class IntentRecognizer:
         return "请问您具体想要做什么呢？"
 
     def update_patterns(self, new_patterns: Dict):
-        """更新识别模式（用于在线学习）"""
+        """更新识别模式（用于在线学习）.
+
+        Args:
+            new_patterns: 新模式字典
+        """
         # TODO: 实现模式更新逻辑
         pass
 
     def get_statistics(self) -> Dict:
-        """获取识别统计信息"""
+        """获取识别统计信息.
+
+        Returns:
+            Dict: 统计信息
+        """
         # TODO: 实现统计信息收集
         return {"total_recognitions": 0, "clarification_rate": 0.0, "intent_distribution": {}}

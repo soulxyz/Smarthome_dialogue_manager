@@ -1,6 +1,6 @@
-"""Streamlit调试界面
+"""Streamlit调试界面.
 
-提供实时的对话调试、监控和可视化功能。
+提供实时的对话调试、监控和可视化功能.
 """
 
 import json
@@ -9,18 +9,18 @@ import sys
 import time
 from datetime import datetime
 
-import pandas as pd
-import streamlit as st
-
 # 添加项目根目录到Python路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dialogue_manager import DialogueEngine, MemoryManager  # noqa: E402
+from dialogue_manager import DialogueEngine
 from dialogue_manager.engine import EngineConfig  # noqa: E402
+
+import pandas as pd
+import streamlit as st
 
 
 def init_session_state():
-    """初始化会话状态"""
+    """初始化会话状态."""
     if "dialogue_engine" not in st.session_state:
         # 从环境变量或Streamlit secrets读取API密钥
         api_key = os.getenv("SILICONFLOW_API_KEY")
@@ -63,7 +63,7 @@ def init_session_state():
 
 
 def display_header():
-    """显示页面头部"""
+    """显示页面头部."""
     st.title("🏠 智能家居多轮对话管理引擎")
     st.markdown("### 调试与监控界面")
 
@@ -89,7 +89,7 @@ def display_header():
 
 
 def display_sidebar():
-    """显示侧边栏控制面板"""
+    """显示侧边栏控制面板."""
     st.sidebar.header("🎛️ 控制面板")
 
     # 用户设置
@@ -189,7 +189,7 @@ def display_sidebar():
 
 
 def display_chat_interface():
-    """显示对话界面"""
+    """显示对话界面."""
     st.header("💬 对话界面")
 
     # 如果有待处理的排队输入（来自澄清候选按钮），优先处理
@@ -241,7 +241,7 @@ def display_chat_interface():
 
 
 def process_user_input(user_input: str):
-    """处理用户输入"""
+    """处理用户输入."""
     engine = st.session_state.dialogue_engine
 
     # 显示用户输入
@@ -308,145 +308,159 @@ def process_user_input(user_input: str):
     st.rerun()
 
 
+def display_intent_tab(tab, debug_info):
+    """显示意图识别标签内容.
+
+    Args:
+        tab: Streamlit tab
+        debug_info: 调试信息
+    """
+    st.subheader("意图识别结果")
+    intent_result = debug_info.get("intent_result", {})
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.json(
+            {
+                "intent": intent_result.get("intent"),
+                "confidence": intent_result.get("confidence"),
+                "need_clarification": intent_result.get("need_clarification"),
+            }
+        )
+
+    with col2:
+        entities = intent_result.get("entities", [])
+        if entities:
+            st.subheader("识别的实体")
+            try:
+                cleaned_entities = [entity if isinstance(entity, dict) else {"entity": str(entity)} for entity in entities]
+                if cleaned_entities:
+                    entity_df = pd.DataFrame(cleaned_entities)
+                    st.dataframe(entity_df)
+                else:
+                    st.info("实体数据格式异常")
+            except Exception as e:
+                st.error(f"显示实体数据时出错: {e}")
+                st.json(entities)
+        else:
+            st.info("未识别到实体")
+
+def display_state_tab(tab, debug_info):
+    """显示状态转换标签内容.
+
+    Args:
+        tab: Streamlit tab
+        debug_info: 调试信息
+    """
+    st.subheader("状态转换历史")
+    transitions = debug_info.get("state_transitions", [])
+    if transitions:
+        try:
+            cleaned_transitions = [transition if isinstance(transition, dict) else {"transition": str(transition)} for transition in transitions]
+            if cleaned_transitions:
+                transition_df = pd.DataFrame(cleaned_transitions)
+                st.dataframe(transition_df)
+            else:
+                st.info("状态转换数据格式异常")
+        except Exception as e:
+            st.error(f"显示状态转换数据时出错: {e}")
+            st.json(transitions)
+    else:
+        st.info("无状态转换记录")
+
+def display_api_tab(tab, debug_info):
+    """显示API调用标签内容.
+
+    Args:
+        tab: Streamlit tab
+        debug_info: 调试信息
+    """
+    st.subheader("API调用记录")
+    api_calls = debug_info.get("api_calls", [])
+    if api_calls:
+        for i, call in enumerate(api_calls):
+            with st.expander(f"API调用 {i+1} - 响应时间: {call.get('response_time', 0):.2f}s"):
+                req_tab, resp_tab, summary_tab = st.tabs(["请求", "响应", "摘要"])
+
+                with summary_tab:
+                    st.json(
+                        {
+                            "success": call.get("success", False),
+                            "content": call.get("content", ""),
+                            "error": call.get("error_message", ""),
+                            "response_time": call.get("response_time", 0),
+                        }
+                    )
+
+                with req_tab:
+                    request_data = call.get("request", {})
+                    if request_data:
+                        st.subheader("请求消息")
+                        messages = request_data.get("messages", [])
+                        for msg in messages:
+                            role = msg.get("role", "")
+                            content = msg.get("content", "")
+                            st.text_area(f"{role.capitalize()}", content, height=100, disabled=True)
+
+                        st.subheader("请求参数")
+                        st.json({"model": request_data.get("model", "")})
+                    else:
+                        st.info("无请求数据")
+
+                with resp_tab:
+                    response_data = call.get("response", {})
+                    if response_data:
+                        st.json(response_data)
+                    else:
+                        st.info("无响应数据")
+    else:
+        st.info("无API调用记录")
+
+def display_context_tab(tab, debug_info):
+    """显示上下文更新标签内容.
+
+    Args:
+        tab: Streamlit tab
+        debug_info: 调试信息
+    """
+    st.subheader("上下文更新")
+    context_updates = debug_info.get("context_updates", {})
+    if context_updates:
+        st.json(context_updates)
+    else:
+        st.info("无上下文更新")
+
 def display_debug_panel():
-    """显示调试面板"""
+    """显示调试面板."""
     st.header("🔍 调试面板")
 
     if not st.session_state.debug_logs:
         st.info("暂无调试信息")
         return
 
-    # 选择要查看的调试信息
     selected_turn = st.selectbox("选择对话轮次", range(len(st.session_state.debug_logs)), format_func=lambda x: f"第 {x+1} 轮")
 
     if selected_turn < len(st.session_state.debug_logs):
         debug_info = st.session_state.debug_logs[selected_turn]
 
-        # 创建标签页
         tab1, tab2, tab3, tab4 = st.tabs(["意图识别", "状态转换", "API调用", "上下文更新"])
 
         with tab1:
-            st.subheader("意图识别结果")
-            intent_result = debug_info.get("intent_result", {})
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.json(
-                    {
-                        "intent": intent_result.get("intent"),
-                        "confidence": intent_result.get("confidence"),
-                        "need_clarification": intent_result.get("need_clarification"),
-                    }
-                )
-
-            with col2:
-                entities = intent_result.get("entities", [])
-                if entities:
-                    st.subheader("识别的实体")
-                    try:
-                        # 确保实体数据格式一致
-                        cleaned_entities = []
-                        for entity in entities:
-                            if isinstance(entity, dict):
-                                cleaned_entities.append(entity)
-                            else:
-                                # 如果不是字典，尝试转换
-                                cleaned_entities.append({"entity": str(entity)})
-
-                        if cleaned_entities:
-                            entity_df = pd.DataFrame(cleaned_entities)
-                            st.dataframe(entity_df)
-                        else:
-                            st.info("实体数据格式异常")
-                    except Exception as e:
-                        st.error(f"显示实体数据时出错: {e}")
-                        st.json(entities)  # 显示原始数据
-                else:
-                    st.info("未识别到实体")
+            display_intent_tab(tab1, debug_info)
 
         with tab2:
-            st.subheader("状态转换历史")
-            transitions = debug_info.get("state_transitions", [])
-            if transitions:
-                try:
-                    # 确保转换数据格式一致
-                    cleaned_transitions = []
-                    for transition in transitions:
-                        if isinstance(transition, dict):
-                            cleaned_transitions.append(transition)
-                        else:
-                            cleaned_transitions.append({"transition": str(transition)})
-
-                    if cleaned_transitions:
-                        transition_df = pd.DataFrame(cleaned_transitions)
-                        st.dataframe(transition_df)
-                    else:
-                        st.info("状态转换数据格式异常")
-                except Exception as e:
-                    st.error(f"显示状态转换数据时出错: {e}")
-                    st.json(transitions)  # 显示原始数据
-            else:
-                st.info("无状态转换记录")
+            display_state_tab(tab2, debug_info)
 
         with tab3:
-            st.subheader("API调用记录")
-            api_calls = debug_info.get("api_calls", [])
-            if api_calls:
-                for i, call in enumerate(api_calls):
-                    with st.expander(f"API调用 {i+1} - 响应时间: {call.get('response_time', 0):.2f}s"):
-                        # 创建请求和响应的标签页
-                        req_tab, resp_tab, summary_tab = st.tabs(["请求", "响应", "摘要"])
-
-                        with summary_tab:
-                            st.json(
-                                {
-                                    "success": call.get("success", False),
-                                    "content": call.get("content", ""),
-                                    "error": call.get("error_message", ""),
-                                    "response_time": call.get("response_time", 0),
-                                }
-                            )
-
-                        with req_tab:
-                            request_data = call.get("request", {})
-                            if request_data:
-                                st.subheader("请求消息")
-                                messages = request_data.get("messages", [])
-                                for msg in messages:
-                                    role = msg.get("role", "")
-                                    content = msg.get("content", "")
-                                    st.text_area(f"{role.capitalize()}", content, height=100, disabled=True)
-
-                                st.subheader("请求参数")
-                                st.json(
-                                    {
-                                        "model": request_data.get("model", ""),
-                                    }
-                                )
-                            else:
-                                st.info("无请求数据")
-
-                        with resp_tab:
-                            response_data = call.get("response", {})
-                            if response_data:
-                                st.json(response_data)
-                            else:
-                                st.info("无响应数据")
-            else:
-                st.info("无API调用记录")
+            display_api_tab(tab3, debug_info)
 
         with tab4:
-            st.subheader("上下文更新")
-            context_updates = debug_info.get("context_updates", {})
-            if context_updates:
-                st.json(context_updates)
-            else:
-                st.info("无上下文更新")
+            display_context_tab(tab4, debug_info)
 
 
 @st.cache_data
 def calculate_statistics(dialogue_history_json: str):
-    """计算统计数据（带缓存）"""
+    """计算统计数据（带缓存）."""
     dialogue_history = json.loads(dialogue_history_json)
 
     if not dialogue_history:
@@ -478,7 +492,7 @@ def calculate_statistics(dialogue_history_json: str):
 
 
 def display_statistics():
-    """显示统计信息"""
+    """显示统计信息."""
     st.header("📊 统计信息")
 
     if not st.session_state.dialogue_history:
@@ -532,7 +546,7 @@ def display_statistics():
 
 
 def main():
-    """主函数"""
+    """主函数."""
     # 配置页面设置（必须在任何Streamlit调用之前）
     st.set_page_config(
         page_title="智能家居对话管理引擎 - 调试界面", page_icon="🏠", layout="wide", initial_sidebar_state="expanded"

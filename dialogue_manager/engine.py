@@ -290,7 +290,15 @@ class DialogueEngine:
         return False
 
     def _generate_response(self, intent_result: Dict, debug_info: Dict) -> str:
-        """生成系统响应"""
+        """生成系统响应.
+
+        Args:
+            intent_result (Dict): 意图识别结果.
+            debug_info (Dict): 调试信息字典.
+
+        Returns:
+            str: 生成的系统响应.
+        """
         try:
             messages = self._build_messages(intent_result)
             api_response = self.api_client.chat_completion(messages)
@@ -315,7 +323,14 @@ class DialogueEngine:
             return "系统出现问题，请稍后再试。"
 
     def _build_messages(self, intent_result: Dict) -> List[Dict]:
-        """构建API请求消息"""
+        """构建API请求消息.
+
+        Args:
+            intent_result (Dict): 意图识别结果.
+
+        Returns:
+            List[Dict]: 用于API请求的消息列表.
+        """
         messages = []
 
         # 系统提示
@@ -335,7 +350,12 @@ class DialogueEngine:
         return messages
 
     def _update_context(self, intent_result: Dict, debug_info: Dict):
-        """更新对话上下文"""
+        """更新对话上下文.
+
+        Args:
+            intent_result (Dict): 意图识别结果.
+            debug_info (Dict): 调试信息字典.
+        """
         # 处理实体数据，将Entity对象列表转换为按类型分组的字典
         entities = intent_result.get("entities", [])
         grouped_entities = {"devices": [], "actions": [], "values": []}
@@ -363,7 +383,11 @@ class DialogueEngine:
         debug_info["context_updates"] = updates
 
     def get_session_info(self) -> Dict:
-        """获取会话信息"""
+        """获取会话信息.
+
+        Returns:
+            Dict: 包含会话信息的字典.
+        """
         return {
             "session_id": self.session_id,
             "current_state": self.current_state.value,
@@ -372,7 +396,7 @@ class DialogueEngine:
         }
 
     def end_session(self):
-        """结束对话会话"""
+        """结束对话会话."""
         if self.session_id:
             # 从session_id中提取user_id
             user_id = self.session_id.split("_")[0] if "_" in self.session_id else "unknown"

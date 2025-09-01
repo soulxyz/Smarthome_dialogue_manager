@@ -210,7 +210,16 @@ class ClarificationAgent:
         return []
 
     def _simple_extract_entities(self, text: str, context: Dict) -> List[Dict]:
-        """简易实体抽取兜底机制"""
+        """
+简易实体抽取兜底机制.
+
+Args:
+    text (str): 输入文本.
+    context (Dict): 上下文信息.
+
+Returns:
+    List[Dict]: 提取的实体列表.
+"""
         entities = []
 
         # 从上下文中获取最近的设备和动作
@@ -309,7 +318,16 @@ class ClarificationAgent:
         return entities
 
     def _build_context_info(self, context: Dict = None, history: List = None) -> str:
-        """构建上下文信息字符串"""
+        """
+构建上下文信息字符串.
+
+Args:
+    context (Dict, optional): 上下文字典.
+    history (List, optional): 历史对话列表.
+
+Returns:
+    str: 构建的上下文信息字符串.
+"""
         context_parts = []
 
         # 从context中提取关键信息
@@ -353,7 +371,17 @@ class ClarificationAgent:
         return "\n".join(context_parts) if context_parts else "无相关上下文"
 
     def _generate_fallback_candidates(self, user_input: str, context: Dict = None, history: List = None) -> List[str]:
-        """基于规则和上下文的降级候选生成"""
+        """
+基于规则和上下文的降级候选生成.
+
+Args:
+    user_input (str): 用户输入.
+    context (Dict, optional): 上下文字典.
+    history (List, optional): 历史对话列表.
+
+Returns:
+    List[str]: 候选列表.
+"""
         candidates = []
 
         # 从上下文中获取最近的设备信息

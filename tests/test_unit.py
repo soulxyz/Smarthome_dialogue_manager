@@ -216,12 +216,9 @@ def test_chat_completion_success(mock_post):
         "model": "zai-org/GLM-4.5-Air"
     }
     mock_post.return_value = mock_response
-    
     client = SiliconFlowClient(api_key="test-key")
     messages = [{"role": "user", "content": "Hello"}]
-    
     result = client.chat_completion(messages)
-    
     assert result.success is True
     assert result.content == "Hello, how can I help you?"
     assert result.usage["total_tokens"] == 18
@@ -234,9 +231,7 @@ def test_chat_completion_success(mock_post):
 def test_chat_completion_empty_messages(mock_post):
     """测试空消息列表"""
     client = SiliconFlowClient(api_key="test-key")
-    
     result = client.chat_completion([])
-    
     assert result.success is False
     assert result.error_message == "Messages cannot be empty"
     assert mock_post.call_count == 0
@@ -245,17 +240,16 @@ def test_chat_completion_empty_messages(mock_post):
 @patch('requests.Session.post')
 def test_chat_completion_invalid_messages(mock_post):
     """测试无效消息格式"""
+# 测试无效消息格式
     client = SiliconFlowClient(api_key="test-key")
-    
+
     # 测试无效消息格式
     invalid_messages = [
         {"content": "Hello"},  # 缺少role
         {"role": "invalid_role", "content": "Hello"},  # 无效role
         "not a dict"  # 不是字典
     ]
-    
     result = client.chat_completion(invalid_messages)
-    
     assert result.success is False
     assert result.error_message == "No valid messages found"
     assert mock_post.call_count == 0
@@ -273,12 +267,9 @@ def test_chat_completion_http_error(mock_post):
         }
     }
     mock_post.return_value = mock_response
-    
     client = SiliconFlowClient(api_key="test-key")
     messages = [{"role": "user", "content": "Hello"}]
-    
     result = client.chat_completion(messages)
-    
     assert result.success is False
     assert "Client error (HTTP 400)" in result.error_message
     assert "Invalid request format" in result.error_message
@@ -291,7 +282,6 @@ def test_chat_completion_rate_limit_retry(mock_post):
     client = SiliconFlowClient(api_key="test-key")
     client.rate_limit_delay = 0.1  # 减少测试时间
     client.max_retries = 2
-    
     # 第一次请求返回429，第二次成功
     responses = [
         Mock(status_code=429),
@@ -303,10 +293,8 @@ def test_chat_completion_rate_limit_retry(mock_post):
         "model": "test-model"
     }
     mock_post.side_effect = responses
-    
     messages = [{"role": "user", "content": "Hello"}]
     result = client.chat_completion(messages)
-    
     assert result.success is True
     assert result.content == "Success after retry"
     assert mock_post.call_count == 2
@@ -318,7 +306,6 @@ def test_chat_completion_timeout_retry(mock_post):
     client = SiliconFlowClient(api_key="test-key")
     client.retry_delay = 0.1  # 减少测试时间
     client.max_retries = 2
-    
     # 第一次超时，第二次成功
     responses = [
         requests.exceptions.Timeout(),
@@ -330,10 +317,8 @@ def test_chat_completion_timeout_retry(mock_post):
         "model": "test-model"
     }
     mock_post.side_effect = responses
-    
     messages = [{"role": "user", "content": "Hello"}]
     result = client.chat_completion(messages)
-    
     assert result.success is True
     assert result.content == "Success after timeout"
     assert mock_post.call_count == 2
@@ -345,7 +330,6 @@ def test_chat_completion_server_error_retry(mock_post):
     client = SiliconFlowClient(api_key="test-key")
     client.retry_delay = 0.1
     client.max_retries = 1
-    
     # 第一次500错误，第二次成功
     responses = [
         Mock(status_code=500, text="Internal Server Error"),
@@ -357,10 +341,8 @@ def test_chat_completion_server_error_retry(mock_post):
         "model": "test-model"
     }
     mock_post.side_effect = responses
-    
     messages = [{"role": "user", "content": "Hello"}]
     result = client.chat_completion(messages)
-    
     assert result.success is True
     assert result.content == "Success after server error"
     assert mock_post.call_count == 2
@@ -372,13 +354,10 @@ def test_chat_completion_max_retries_exceeded(mock_post):
     client = SiliconFlowClient(api_key="test-key")
     client.retry_delay = 0.1
     client.max_retries = 2
-    
     # 所有请求都返回500错误
     mock_post.return_value = Mock(status_code=500, text="Persistent Server Error")
-    
     messages = [{"role": "user", "content": "Hello"}]
     result = client.chat_completion(messages)
-    
     assert result.success is False
     assert "Server error (HTTP 500)" in result.error_message
     assert mock_post.call_count == 3  # 初始请求 + 2次重试
@@ -390,13 +369,10 @@ def test_chat_completion_connection_error(mock_post):
     client = SiliconFlowClient(api_key="test-key")
     client.max_retries = 1
     client.retry_delay = 0.1
-    
     # 所有请求都抛出连接错误
     mock_post.side_effect = requests.exceptions.ConnectionError("Connection failed")
-    
     messages = [{"role": "user", "content": "Hello"}]
     result = client.chat_completion(messages)
-    
     assert result.success is False
     assert "Connection error" in result.error_message
     assert mock_post.call_count == 2  # 初始请求 + 1次重试
@@ -409,12 +385,9 @@ def test_chat_completion_json_decode_error(mock_post):
     mock_response.status_code = 200
     mock_response.json.side_effect = json.JSONDecodeError("Invalid JSON", "", 0)
     mock_post.return_value = mock_response
-    
     client = SiliconFlowClient(api_key="test-key")
     messages = [{"role": "user", "content": "Hello"}]
-    
     result = client.chat_completion(messages)
-    
     assert result.success is False
     assert "Invalid JSON response" in result.error_message
 
@@ -430,7 +403,6 @@ def test_chat_completion_message_truncation(mock_post):
         "model": "test-model"
     }
     mock_post.return_value = mock_response
-    
     client = SiliconFlowClient(api_key="test-key")
     
     # 创建超过10条的消息
@@ -903,9 +875,9 @@ def test_memory_manager_update_user_preferences(temp_db_path):
 
 
 def test_memory_manager_save_and_load_session(temp_db_path):
-    """测试会话保存和加载"""
+    """测试会话保存和加载."""
     manager = MemoryManager(db_path=temp_db_path)
-    
+
     # 创建对话历史
     dialogue_history = [
         {
@@ -940,9 +912,9 @@ def test_memory_manager_save_and_load_session(temp_db_path):
 
 
 def test_memory_manager_save_and_load_dialogue(temp_db_path):
-    """测试对话记录保存和加载"""
+    """测试对话记录保存和加载。"""
     manager = MemoryManager(db_path=temp_db_path)
-    
+
     # 创建对话历史
     dialogue_history = [
         {
@@ -976,9 +948,9 @@ def test_memory_manager_save_and_load_dialogue(temp_db_path):
 
 
 def test_memory_manager_get_user_sessions(temp_db_path):
-    """测试获取用户会话统计"""
+    """测试获取用户会话统计。"""
     manager = MemoryManager(db_path=temp_db_path)
-    
+
     # 创建多个会话
     for i in range(3):
         dialogue_history = [
@@ -1001,9 +973,9 @@ def test_memory_manager_get_user_sessions(temp_db_path):
 
 
 def test_memory_manager_get_session_dialogues(temp_db_path):
-    """测试获取会话对话记录"""
+    """测试获取会话对话记录."""
     manager = MemoryManager(db_path=temp_db_path)
-    
+
     # 创建会话和对话记录
     dialogue_history = [
         {
@@ -1025,52 +997,52 @@ def test_memory_manager_get_session_dialogues(temp_db_path):
             "timestamp": time.time() + 20
         }
     ]
-    
+
     manager.save_session("test_session", dialogue_history, "test_user")
-    
+
     # 获取最近的对话记录
     dialogues = manager.get_recent_dialogues("test_user", limit=10)
-    
+
     assert len(dialogues) == 3
     # 验证对话内容
     user_inputs = [d.user_input for d in dialogues]
     assert "输入1" in user_inputs
     assert "输入2" in user_inputs
     assert "输入3" in user_inputs
-    
+
     manager.pool.close_all()
 
 
 def test_memory_manager_session_patterns(temp_db_path):
-    """测试会话模式缓存"""
+    """测试会话模式缓存."""
     manager = MemoryManager(db_path=temp_db_path)
-    
+
     # 添加会话模式
     manager.add_pattern("session1", "device_control", "打开.*灯")
     manager.add_pattern("session1", "device_control", "关闭.*电视")
     manager.add_pattern("session1", "query_status", ".*温度.*")
-    
+
     # 获取会话模式
     patterns = manager.get_session_patterns("session1")
-    
+
     assert "device_control" in patterns
     assert "query_status" in patterns
     assert "打开.*灯" in patterns["device_control"]
     assert "关闭.*电视" in patterns["device_control"]
     assert ".*温度.*" in patterns["query_status"]
-    
+
     # 清除会话模式
     manager.clear_session_patterns("session1")
     patterns_after_clear = manager.get_session_patterns("session1")
     assert patterns_after_clear == {}
-    
+
     manager.pool.close_all()
 
 
 def test_memory_manager_load_user_context(temp_db_path):
-    """测试加载用户上下文"""
+    """测试加载用户上下文."""
     manager = MemoryManager(db_path=temp_db_path)
-    
+
     # 创建用户档案
     profile = UserProfile(
         user_id="context_user",
@@ -1080,27 +1052,27 @@ def test_memory_manager_load_user_context(temp_db_path):
         updated_at=time.time()
     )
     manager.save_user_profile(profile)
-    
+
     # 加载用户上下文
     context = manager.load_user_context("context_user")
-    
+
     assert context["user_id"] == "context_user"
     assert context["preferences"]["language"] == "zh"
     assert context["device_config"]["living_room"] == ["tv", "light", "ac"]
-    
+
     # 测试不存在的用户
     empty_context = manager.load_user_context("nonexistent_user")
     assert empty_context["user_id"] == "nonexistent_user"
     assert empty_context["preferences"] == {}
     assert empty_context["device_config"] == {}
-    
+
     manager.pool.close_all()
 
 
 def test_memory_manager_cleanup_old_sessions(temp_db_path):
-    """测试清理旧会话"""
+    """测试清理旧会话."""
     manager = MemoryManager(db_path=temp_db_path)
-    
+
     # 创建旧会话（40天前）
     old_time = time.time() - 40 * 24 * 3600
     old_dialogue = [
@@ -1112,7 +1084,7 @@ def test_memory_manager_cleanup_old_sessions(temp_db_path):
         }
     ]
     manager.save_session("old_session", old_dialogue, "test_user")
-    
+
     # 创建新会话
     new_dialogue = [
         {
@@ -1123,16 +1095,16 @@ def test_memory_manager_cleanup_old_sessions(temp_db_path):
         }
     ]
     manager.save_session("new_session", new_dialogue, "test_user")
-    
+
     # 验证有2个会话
     stats_before = manager.get_statistics("test_user")
     assert stats_before["total_sessions"] == 2
-    
+
     # 清理30天前的会话
     manager.cleanup_old_records(days_to_keep=30)
-    
+
     # 验证旧会话被删除
     stats_after = manager.get_statistics("test_user")
     assert stats_after["total_sessions"] == 1
-    
+
     manager.pool.close_all()

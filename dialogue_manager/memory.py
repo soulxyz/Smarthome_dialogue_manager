@@ -146,7 +146,7 @@ class MemoryManager:
         self._init_database()
 
     def _init_database(self):
-        """初始化数据库表结构"""
+        """初始化数据库表结构."""
         with self.pool.get_connection() as conn:
             cursor = conn.cursor()
 
@@ -689,16 +689,33 @@ class MemoryManager:
 
     # ====== Session PatternCache APIs ======
     def add_pattern(self, session_id: str, intent: str, pattern: str):
-        """向当前会话缓存中添加新正则模式"""
+        """向当前会话缓存中添加新正则模式.
+
+        Args:
+            session_id: 会话ID
+            intent: 意图
+            pattern: 正则模式
+        """
         if not pattern:
             return
         self.session_patterns.setdefault(session_id, {}).setdefault(intent, set()).add(pattern)
 
     def get_session_patterns(self, session_id: str) -> Dict[str, set]:
-        """获取指定会话的所有自学习模式"""
+        """获取指定会话的所有自学习模式.
+
+        Args:
+            session_id: 会话ID
+
+        Returns:
+            Dict[str, set]: 会话模式
+        """
         return self.session_patterns.get(session_id, {})
 
     def clear_session_patterns(self, session_id: str):
-        """清理会话结束时的 PatternCache"""
+        """清理会话结束时的 PatternCache.
+
+        Args:
+            session_id: 会话ID
+        """
         if session_id in self.session_patterns:
             del self.session_patterns[session_id]
