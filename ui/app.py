@@ -188,24 +188,52 @@ def display_sidebar():
         "最大对话轮数", min_value=1, max_value=20, value=current_max_turns, help="单次会话的最大对话轮数"
     )
 
+    # 新增：执行模式与轨迹开关（Phase 1）
+    cfg = st.session_state.get("engine_config", EngineConfig())
+    mode_value = getattr(cfg, "execution_mode", "internal_first")
+    execution_mode = st.sidebar.selectbox(
+        "执行模式",
+        options=["internal_first", "llm_first", "parallel"],
+        index=["internal_first", "llm_first", "parallel"].index(mode_value) if mode_value in ["internal_first", "llm_first", "parallel"] else 0,
+        help="internal_first: 内部逻辑优先; llm_first: 大模型优先; parallel: 并行（第一阶段为顺序模拟）"
+    )
+    always_record_api_traces = st.sidebar.checkbox(
+        "始终记录API轨迹(含确定性路径)",
+        value=getattr(cfg, "always_record_api_traces", True)
+    )
+
     # 检查配置是否有变化，如果有则更新引擎配置
     if "engine_config" in st.session_state and (
         confidence_threshold != st.session_state.engine_config.confidence_threshold
         or max_turns != st.session_state.engine_config.max_turns
+        or execution_mode != getattr(st.session_state.engine_config, "execution_mode", "internal_first")
+        or always_record_api_traces != getattr(st.session_state.engine_config, "always_record_api_traces", True)
     ):
 
         # 更新配置
-        st.session_state.engine_config.update(confidence_threshold=confidence_threshold, max_turns=max_turns)
+        st.session_state.engine_config.update(
+            confidence_threshold=confidence_threshold,
+            max_turns=max_turns,
+            execution_mode=execution_mode,
+            always_record_api_traces=always_record_api_traces,
+        )
 
         # 更新引擎配置
         if "dialogue_engine" in st.session_state:
-            st.session_state.dialogue_engine.update_config(confidence_threshold=confidence_threshold, max_turns=max_turns)
+            st.session_state.dialogue_engine.update_config(
+                confidence_threshold=confidence_threshold,
+                max_turns=max_turns,
+                execution_mode=execution_mode,
+                always_record_api_traces=always_record_api_traces,
+            )
 
             # 更新子组件的配置
             st.session_state.dialogue_engine.intent_recognizer.confidence_threshold = confidence_threshold
             st.session_state.dialogue_engine.clarification_agent.confidence_threshold = confidence_threshold
 
-        st.sidebar.success(f"✅ 配置已更新: 阈值={confidence_threshold}, 最大轮数={max_turns}")
+        st.sidebar.success(
+            f"✅ 配置已更新: 阈值={confidence_threshold}, 最大轮数={max_turns}, 模式={execution_mode}, 记录轨迹={always_record_api_traces}"
+        )
 
     # 清理按钮
     st.sidebar.subheader("数据管理")
@@ -402,6 +430,14 @@ def display_api_tab(tab, debug_info):
         debug_info: 调试信息
     """
     st.subheader("API调用记录")
+    # 新增：内部/LLM计划与差异
+    if debug_info.get("internal_plan"):
+        st.info("内部计划(internal)")
+        st.json(debug_info["internal_plan"]) 
+    if debug_info.get("plan_diff"):
+        st.warning("计划差异(plan_diff)")
+        st.json(debug_info["plan_diff"]) 
+
     api_calls = debug_info.get("api_calls", [])
     if api_calls:
         for i, call in enumerate(api_calls):
@@ -413,7 +449,7 @@ def display_api_tab(tab, debug_info):
                         {
                             "success": call.get("success", False),
                             "content": call.get("content", ""),
-                            "error": call.get("error_message", ""),
+                            "error": call.get("error_message", call.get('error', "")),
                             "response_time": call.get("response_time", 0),
                         }
                     )
@@ -423,13 +459,13 @@ def display_api_tab(tab, debug_info):
                     if request_data:
                         st.subheader("请求消息")
                         messages = request_data.get("messages", [])
-                        for msg in messages:
+                        for msg_idx, msg in enumerate(messages):
                             role = msg.get("role", "")
                             content = msg.get("content", "")
-                            st.text_area(f"{role.capitalize()}", content, height=100, disabled=True)
+                            st.text_area(f"{role.capitalize()}", content, height=100, disabled=True, key=f"api_req_msg_{i}_{msg_idx}")
 
                         st.subheader("请求参数")
-                        st.json({"model": request_data.get("model", "")})
+                        st.json({"model": request_data.get("model", ""), "mode": request_data.get("mode", ""), "note": request_data.get("note", "")})
                     else:
                         st.info("无请求数据")
 

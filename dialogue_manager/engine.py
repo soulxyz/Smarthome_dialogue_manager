@@ -5,6 +5,7 @@
 
 import logging
 import time
+import json
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
@@ -26,6 +27,10 @@ class EngineConfig:
     enable_clarification: bool = True
     session_timeout: int = 3600  # 会话超时时间（秒）
     enable_device_manager: bool = True  # 是否启用设备管理器
+    # 新增：执行模式与可观测性控制（Phase 1）
+    execution_mode: str = "internal_first"  # 可选: internal_first | llm_first | parallel
+    always_record_api_traces: bool = True    # 即便走确定性路径也在 debug_info.api_calls 中记录一条伪调用
+    parallel_timeout_ms: int = 1500          # 并行模式下等待LLM的超时时间（毫秒）
 
     def update(self, **kwargs):
         """更新配置参数"""
@@ -308,10 +313,12 @@ class DialogueEngine:
 
             # 尝试与设备管理器交互，提前得到确定性执行反馈
             device_exec_summary = None
+            internal_plan = None
             if self.device_manager and intent_result.get("intent") in {"device_control", "query_status"}:
                 try:
                     original_text = intent_result.get("original_text", "")
-                    room = self._extract_room(original_text)
+                    # 优先使用意图识别出的地点实体，其次回退到基于文本的房间抽取
+                    room = self._extract_first_entity(intent_result.get("entities", []), "location") or self._extract_room(original_text)
                     device_type = self._extract_first_entity(intent_result.get("entities", []), "device")
                     action_kw = self._extract_first_entity(intent_result.get("entities", []), "action")
                     number_value = self._extract_number_value(intent_result.get("entities", []), original_text)
@@ -327,20 +334,109 @@ class DialogueEngine:
                         )
                         debug_info["device_action_result"] = exec_res
                         device_exec_summary = exec_res.get("message")
+                        internal_plan = {
+                            "plan_type": "internal",
+                            "intent": "device_control",
+                            "room": room,
+                            "device_type": device_type,
+                            "action": action_kw,
+                            "attribute": attribute,
+                            "number_value": number_value,
+                            "success": exec_res.get("success", True),
+                            "message": device_exec_summary,
+                        }
                     elif intent_result.get("intent") == "query_status":
-                        q_res = self.device_manager.query_status(device_type=device_type, room=room)
-                        debug_info["device_query_result"] = q_res
-                        device_exec_summary = q_res.get("message")
+                        # 如果没有明确的 device_type 但有房间信息，返回该房间下可操作的设备列表
+                        if not device_type and room:
+                            q_res = self.device_manager.query_status(device_type=None, room=room)
+                            debug_info["device_query_result"] = q_res
+                            device_exec_summary = q_res.get("message")
+                            internal_plan = {
+                                "plan_type": "internal",
+                                "intent": "query_status",
+                                "room": room,
+                                "device_type": None,
+                                "action": "list_devices",
+                                "attribute": None,
+                                "number_value": None,
+                                "success": q_res.get("success", True),
+                                "message": device_exec_summary,
+                            }
+                        else:
+                            q_res = self.device_manager.query_status(device_type=device_type, room=room)
+                            debug_info["device_query_result"] = q_res
+                            device_exec_summary = q_res.get("message")
+                            internal_plan = {
+                                "plan_type": "internal",
+                                "intent": "query_status",
+                                "room": room,
+                                "device_type": device_type,
+                                "action": "query",
+                                "attribute": None,
+                                "number_value": None,
+                                "success": True,
+                                "message": device_exec_summary,
+                            }
                 except Exception as e:
                     self.logger.warning(f"设备管理器交互失败: {e}")
 
-            # 方案A：对设备相关意图，优先返回确定性结果，避免被模型覆盖，同时记录供后续轮次使用
-            if intent_result.get("intent") == "query_status" and device_exec_summary:
+            # 方案A：对设备相关意图，根据执行模式决定是否提前返回或并行/优先调用LLM
+            if intent_result.get("intent") in {"query_status", "device_control"} and device_exec_summary:
+                mode = getattr(self.config, "execution_mode", "internal_first")
                 debug_info["device_summary"] = device_exec_summary
-                return f"当前设备状态如下：{device_exec_summary}"
-            if intent_result.get("intent") == "device_control" and device_exec_summary:
-                debug_info["device_summary"] = device_exec_summary
-                return f"好的，{device_exec_summary}"
+                # 记录内部计划
+                if internal_plan:
+                    debug_info["internal_plan"] = internal_plan
+                # 记录内部伪API调用（可观测性）
+                if getattr(self.config, "always_record_api_traces", False):
+                    debug_info.setdefault("api_calls", []).append({
+                        "success": True,
+                        "content": device_exec_summary,
+                        "error": None,
+                        "response_time": 0.0,
+                        "request": {"messages": messages, "model": getattr(self.api_client, "model_id", None), "mode": mode, "note": "deterministic internal result"},
+                        "response": {"source": "internal_device_manager"},
+                    })
+
+                # internal_first：沿用原逻辑，直接返回确定性结果
+                if mode == "internal_first":
+                    if intent_result.get("intent") == "query_status":
+                        return f"当前设备状态如下：{device_exec_summary}"
+                    else:
+                        return f"好的，{device_exec_summary}"
+
+                # llm_first / parallel：注入确定性结果并调用LLM，合并返回
+                messages.append({"role": "system", "content": f"设备执行/查询结果: {device_exec_summary}"})
+                original_timeout = getattr(self.api_client, "timeout", None)
+                try:
+                    if mode == "parallel":
+                        llm_timeout_s = max(1, int(getattr(self.config, "parallel_timeout_ms", 1500) / 1000))
+                        if original_timeout is not None:
+                            self.api_client.timeout = llm_timeout_s
+
+                    debug_info.setdefault("api_calls", [])
+                    api_response = self.api_client.chat_completion(messages)
+                    debug_info["api_calls"].append(
+                        {
+                            "success": api_response.success,
+                            "content": api_response.content,
+                            "error": api_response.error_message,
+                            "response_time": api_response.response_time,
+                            "request": {"messages": messages, "model": self.api_client.model_id, "mode": mode},
+                            "response": api_response.raw_response,
+                        }
+                    )
+
+                    base = (
+                        f"当前设备状态如下：{device_exec_summary}" if intent_result.get("intent") == "query_status" else f"好的，{device_exec_summary}"
+                    )
+                    if api_response.success and api_response.content:
+                        return f"{base}\n{api_response.content}"
+                    else:
+                        return base
+                finally:
+                    if mode == "parallel" and original_timeout is not None:
+                        self.api_client.timeout = original_timeout
 
             # 将确定性结果注入到提示中，提高回复贴合度（非设备相关意图时保留）
             if device_exec_summary:
