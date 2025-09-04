@@ -607,12 +607,12 @@ def test_engine_process_input_query_status(monkeypatch):
     fake_mem = FakeMemoryManager()
     engine.memory_manager = fake_mem
     
-    api_client = FakeAPIClient([DummyAPIResponse(success=True, content="当前卧室温度为22度")])
+    api_client = FakeAPIClient([DummyAPIResponse(success=True, content="当前主卧温度为22度")])
     engine.api_client = api_client
     engine.clarification_agent.api_client = api_client
     
     engine.start_session("test_user")
-    response, debug_info = engine.process_input("现在卧室温度怎么样")
+    response, debug_info = engine.process_input("现在主卧温度怎么样")
     
     assert "温度" in response
     assert debug_info["intent_result"]["intent"] == "query_status"

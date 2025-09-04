@@ -471,3 +471,43 @@ class DeviceManager:
             if device.room:
                 patterns[f"{device.room}{device.name}"] = device.device_type
         return patterns
+    
+    def get_available_rooms(self) -> List[str]:
+        """返回所有可用房间列表"""
+        rooms = set()
+        for device in self.devices:
+            if device.room:
+                rooms.add(device.room)
+        return list(rooms)
+    
+    def get_available_device_types(self) -> List[str]:
+        """返回所有可用设备类型列表"""
+        device_types = set()
+        for device in self.devices:
+            device_types.add(device.device_type)
+        return list(device_types)
+    
+    def get_device_synonyms(self) -> Dict[str, List[str]]:
+        """返回设备类型的同义词映射"""
+        # 基础同义词映射，可以通过配置文件或API扩展
+        base_synonyms = {
+            "灯": ["灯", "台灯", "吊灯", "壁灯", "射灯", "照明", "灯光"],
+            "空调": ["空调", "冷气", "暖气", "制冷", "制热", "空气调节器"],
+            "电视": ["电视", "电视机", "TV", "显示器", "电视屏幕"],
+            "风扇": ["风扇", "吊扇", "落地扇", "台扇", "电扇"]
+        }
+        
+        # 只返回当前系统中实际存在的设备类型的同义词
+        available_types = self.get_available_device_types()
+        return {device_type: synonyms for device_type, synonyms in base_synonyms.items() 
+                if device_type in available_types}
+    
+    def get_action_synonyms(self) -> Dict[str, List[str]]:
+        """返回动作的同义词映射"""
+        return {
+            "开启": ["打开", "开启", "启动", "开", "打开"],
+            "关闭": ["关闭", "关掉", "关", "停止", "关掉"],
+            "调节": ["调节", "设置", "调到", "调整"],
+            "增加": ["增加", "提高", "调高", "加大"],
+            "减少": ["减少", "降低", "调低", "减小"]
+        }

@@ -48,6 +48,9 @@ class ClarificationAgent:
         self.intent_recognizer = intent_recognizer
         self.confidence_threshold = confidence_threshold
         self.max_candidates = max_candidates
+        
+        # 获取设备管理器引用
+        self.device_manager = getattr(intent_recognizer, 'device_manager', None)
 
     # ---------------------------------------------------------------------
     # public api
@@ -99,6 +102,8 @@ class ClarificationAgent:
             best_result["self_clarified"] = True
             best_result["clarification_type"] = "auto_high_confidence"
             best_result["clarified_text"] = best_result.get("original_text", "")
+            # 保留用户真实的原始输入
+            best_result["original_text"] = user_input
             return best_result, candidates
 
         elif best_result and best_conf >= medium_confidence_threshold:
@@ -112,6 +117,8 @@ class ClarificationAgent:
             best_result["clarification_type"] = "user_confirmation_needed"
             best_result["clarified_text"] = best_result.get("original_text", "")
             best_result["suggested_interpretation"] = best_result.get("original_text", "")
+            # 保留用户真实的原始输入
+            best_result["original_text"] = user_input
             return best_result, candidates
 
         # 低置信度：返回None，需要系统向用户澄清
@@ -234,24 +241,9 @@ Returns:
         recent_devices = {entity["value"] for entity in last_entities.get("devices", [])}
         recent_actions = {entity["value"] for entity in last_entities.get("actions", [])}
 
-        # 设备词典（扩展版）
-        device_dict = {
-            "空调": ["空调", "冷气", "暖气", "制冷", "制热"],
-            "电视": ["电视", "电视机", "TV", "显示器"],
-            "灯": ["灯", "台灯", "吊灯", "壁灯", "射灯", "客厅灯", "卧室灯", "厨房灯"],
-            "风扇": ["风扇", "吊扇", "落地扇", "台扇"],
-            "热水器": ["热水器", "热水", "水温"],
-            "洗衣机": ["洗衣机", "洗衣", "脱水", "甩干"],
-        }
-
-        # 动作词典
-        action_dict = {
-            "开启": ["打开", "开启", "启动", "开", "打开"],
-            "关闭": ["关闭", "关掉", "关", "停止", "关掉"],
-            "调节": ["调节", "设置", "调到", "调整"],
-            "增加": ["增加", "提高", "调高", "加大"],
-            "减少": ["减少", "降低", "调低", "减小"],
-        }
+        # 获取动态设备和动作词典
+        device_dict = self._get_device_dict()
+        action_dict = self._get_action_dict()
 
         # 优先匹配上下文中的设备
         for device in recent_devices:
@@ -434,3 +426,36 @@ Returns:
                 candidates.append(template)
 
         return candidates[: self.max_candidates]
+
+    def _get_device_dict(self) -> Dict[str, List[str]]:
+        """获取设备词典"""
+        if self.device_manager:
+            try:
+                return self.device_manager.get_device_synonyms()
+            except Exception as e:
+                logger.warning(f"Failed to get device synonyms from device manager: {e}")
+        
+        # 回退到默认设备词典
+        return {
+            "灯": ["灯", "台灯", "吊灯", "壁灯", "射灯", "照明", "灯光"],
+            "空调": ["空调", "冷气", "暖气", "制冷", "制热", "空气调节器"],
+            "电视": ["电视", "电视机", "TV", "显示器", "电视屏幕"],
+            "风扇": ["风扇", "吊扇", "落地扇", "台扇", "电扇"]
+        }
+
+    def _get_action_dict(self) -> Dict[str, List[str]]:
+        """获取动作词典"""
+        if self.device_manager:
+            try:
+                return self.device_manager.get_action_synonyms()
+            except Exception as e:
+                logger.warning(f"Failed to get action synonyms from device manager: {e}")
+        
+        # 回退到默认动作词典
+        return {
+            "开启": ["打开", "开启", "启动", "开", "打开"],
+            "关闭": ["关闭", "关掉", "关", "停止", "关掉"],
+            "调节": ["调节", "设置", "调到", "调整"],
+            "增加": ["增加", "提高", "调高", "加大"],
+            "减少": ["减少", "降低", "调低", "减小"]
+        }

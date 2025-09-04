@@ -50,14 +50,16 @@ class IntentResult:
 class IntentRecognizer:
     """意图识别器"""
 
-    def __init__(self, config, confidence_threshold: float = 0.7):
+    def __init__(self, config, confidence_threshold: float = 0.7, device_manager=None):
         """初始化意图识别器
 
         Args:
             config: 引擎配置对象
             confidence_threshold: 置信度阈值，低于此值需要澄清
+            device_manager: 设备管理器，用于获取动态设备信息
         """
         self.config = config
+        self.device_manager = device_manager
         self.confidence_threshold = confidence_threshold
         self.logger = logging.getLogger(__name__)
         self._last_confidence = 0.0  # 初始化最后的置信度
@@ -88,6 +90,8 @@ class IntentRecognizer:
             r"(设备|家电).*?(列表|有哪些|有什么)",
             r"(能操作|可操作|能控制|可以控制).*?(设备|家电)",
             r"(主卧|次卧|卧室|客厅|厨房|书房|阳台).*?(有什么|有哪些).*?(设备|家电)",
+            # 新增：位置声明类表达
+            r"(我|现在).*?(在|位于).*?(主卧|次卧|卧室|客厅|厨房|书房|阳台)",
         ]
 
         # 场景控制相关关键词
@@ -142,6 +146,16 @@ class IntentRecognizer:
                     self.device_entities[device_type] = list(set(self.device_entities[device_type] + patterns))
                 else:
                     self.device_entities[device_type] = patterns
+
+        # 初始化动态关键词
+        self.device_keywords = {}
+        self.action_keywords = {}
+        
+        # 从设备管理器获取动态设备信息
+        self._update_dynamic_device_entities()
+        
+        # 动态获取设备和动作关键词
+        self._update_dynamic_keywords()
 
     def recognize(self, user_input: str, context: Dict, history: List) -> Dict:
         """识别用户输入的意图
@@ -386,30 +400,108 @@ class IntentRecognizer:
                 entities.append(entity)
                 found_spans.append((start, end))
 
-        # 4. 抽取地点实体
-        location_keywords = ["北京", "上海", "广州", "深圳", "杭州", "南京", "武汉", "成都", "重庆", "西安"]
+        # 4. 抽取地点实体（动态获取）
+        location_keywords = self._get_location_keywords()
+        # 先处理复合词（如"主卧室"），再处理单独词（如"主卧"）
         for location in sorted(location_keywords, key=len, reverse=True):
-            for match in re.finditer(re.escape(location), user_input):
-                start, end = match.span()
-                is_overlapping = False
-                for found_start, found_end in found_spans:
-                    if start < found_end and end > found_start:
-                        is_overlapping = True
-                        break
+            # 使用更宽松的匹配模式，包括带有位置介词的情况
+            patterns = [
+                re.escape(location),  # 精确匹配
+                r"(?:在|位于)\s*" + re.escape(location),  # 带位置介词
+                r"(?:现在在|我在)\s*" + re.escape(location),  # 位置声明
+            ]
+            
+            for pattern in patterns:
+                for match in re.finditer(pattern, user_input):
+                    # 提取实际的地点名称（去除介词）
+                    location_start = user_input.find(location, match.start())
+                    if location_start >= 0:
+                        start, end = location_start, location_start + len(location)
+                        
+                        is_overlapping = False
+                        for found_start, found_end in found_spans:
+                            if start < found_end and end > found_start:
+                                is_overlapping = True
+                                break
 
-                if not is_overlapping:
-                    entity = Entity(
-                        name=location,
-                        value=location,
-                        entity_type="location",
-                        confidence=0.9,
-                        start_pos=start,
-                        end_pos=end,
-                    )
-                    entities.append(entity)
-                    found_spans.append((start, end))
+                        if not is_overlapping:
+                            entity = Entity(
+                                name=location,
+                                value=location,
+                                entity_type="location",
+                                confidence=0.95,  # 提高置信度
+                                start_pos=start,
+                                end_pos=end,
+                            )
+                            entities.append(entity)
+                            found_spans.append((start, end))
+                            break  # 找到一个匹配就跳出pattern循环
 
         return entities
+
+    def _update_dynamic_device_entities(self):
+        """从设备管理器更新动态设备实体"""
+        if not self.device_manager:
+            return
+            
+        try:
+            # 获取所有设备
+            devices = self.device_manager.get_all_devices()
+            
+            # 按设备类型分组
+            device_types = {}
+            for device in devices:
+                device_type = device.get('type', '未知设备')
+                device_name = device.get('name', '')
+                
+                if device_type not in device_types:
+                    device_types[device_type] = []
+                
+                if device_name:
+                    device_types[device_type].append(device_name)
+            
+            # 更新设备实体映射
+            for device_type, device_names in device_types.items():
+                if device_type in self.device_entities:
+                    # 合并现有的和动态的设备名称
+                    self.device_entities[device_type] = list(set(self.device_entities[device_type] + device_names))
+                else:
+                    # 添加新的设备类型
+                    self.device_entities[device_type] = device_names
+                    
+            self.logger.info(f"Updated device entities from device manager: {device_types}")
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to update dynamic device entities: {e}")
+    
+    def _update_dynamic_keywords(self):
+        """动态更新设备和动作关键词"""
+        # 从设备实体中提取关键词
+        for device_type, device_names in self.device_entities.items():
+            for device_name in device_names:
+                self.device_keywords[device_name] = device_type
+        
+        # 从动作实体中提取关键词
+        for action_type, action_names in self.action_entities.items():
+            for action_name in action_names:
+                self.action_keywords[action_name] = action_type
+    
+    def _get_location_keywords(self):
+         """获取位置关键词列表"""
+         # 从设备管理器获取动态房间信息
+         if self.device_manager:
+             try:
+                 rooms = self.device_manager.get_available_rooms()
+                 # 添加一些常见的房间同义词
+                 extended_rooms = rooms.copy()
+                 if "主卧" in rooms and "卧室" not in extended_rooms:
+                     extended_rooms.append("卧室")
+                 return extended_rooms
+             except Exception as e:
+                 self.logger.warning(f"Failed to get rooms from device manager: {e}")
+         
+         # 回退到基础位置关键词
+         return ["客厅", "主卧", "次卧", "卧室", "厨房", "书房", "阳台", "卫生间", "浴室", "餐厅"]
 
     def _enhance_with_context(
         self, user_input: str, intent_scores: Dict[str, float], context: Dict, history: List

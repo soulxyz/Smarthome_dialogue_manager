@@ -15,6 +15,7 @@ from .clarification import ClarificationAgent
 from .intent import IntentRecognizer
 from .memory import MemoryManager
 from .device_manager import DeviceManager
+from .logger import get_dialogue_logger, EventType
 
 
 @dataclass
@@ -30,7 +31,7 @@ class EngineConfig:
     # 新增：执行模式与可观测性控制（Phase 1）
     execution_mode: str = "internal_first"  # 可选: internal_first | llm_first | parallel
     always_record_api_traces: bool = True    # 即便走确定性路径也在 debug_info.api_calls 中记录一条伪调用
-    parallel_timeout_ms: int = 1500          # 并行模式下等待LLM的超时时间（毫秒）
+    parallel_timeout_ms: int = 50000          # 并行模式下等待LLM的超时时间（毫秒）
     focus_entity_turn_decay: int = 2         # 焦点实体在多少轮不被引用后失效
     device_patterns: Dict = field(default_factory=dict) # 设备正则模式
     # P0核心可用性改进配置
@@ -86,16 +87,19 @@ class DialogueEngine:
         """
         self.config = config or EngineConfig()
         self.api_client = SiliconFlowClient(api_key)
+        # 设备管理器
+        self.device_manager = DeviceManager() if getattr(self.config, 'enable_device_manager', False) else None
+        
         self.intent_recognizer = IntentRecognizer(
             config=self.config,
-            confidence_threshold=self.config.confidence_threshold
+            confidence_threshold=self.config.confidence_threshold,
+            device_manager=self.device_manager
         )
         self.memory_manager = MemoryManager()
         self.clarification_agent = ClarificationAgent(
             self.api_client, self.intent_recognizer, confidence_threshold=self.config.confidence_threshold
         )
-        # 设备管理器
-        self.device_manager = DeviceManager() if getattr(self.config, 'enable_device_manager', False) else None
+        
         if self.device_manager:
             self.config.device_patterns = self.device_manager.get_device_patterns()
 
@@ -105,6 +109,7 @@ class DialogueEngine:
         self.context = {}
 
         self.logger = logging.getLogger(__name__)
+        self.dialogue_logger = get_dialogue_logger()
 
     def update_config(self, **kwargs):
         """更新引擎配置"""
@@ -128,6 +133,14 @@ class DialogueEngine:
         self.intent_recognizer.set_session_patterns(self.memory_manager.get_session_patterns(self.session_id))
 
         self.logger.info(f"Started new session: {self.session_id}")
+        
+        # 记录会话开始日志
+        self.dialogue_logger.log_session_event(
+            session_id=self.session_id,
+            event_type=EventType.SESSION_START,
+            user_id=user_id
+        )
+        
         return self.session_id
 
     def process_input(self, user_input: str) -> Tuple[str, Dict]:
@@ -237,11 +250,32 @@ class DialogueEngine:
 
             # 状态转换：执行 -> 监听
             self._transition_state(DialogueState.LISTENING, debug_info)
+            
+            # 记录对话轮次日志
+            user_id = self.session_id.split("_")[0] if self.session_id and "_" in self.session_id else None
+            self.dialogue_logger.log_dialogue_turn(
+                session_id=self.session_id or "unknown",
+                turn_id=len(self.dialogue_history),
+                user_input=user_input,
+                system_response=response,
+                debug_info=debug_info,
+                user_id=user_id
+            )
 
         except Exception as e:
             self.logger.error(f"Error processing input: {e}")
             self._transition_state(DialogueState.ERROR, debug_info)
             response = "抱歉，系统出现了问题，请稍后再试。"
+            
+            # 记录错误日志
+            user_id = self.session_id.split("_")[0] if self.session_id and "_" in self.session_id else None
+            self.dialogue_logger.log_error(
+                session_id=self.session_id or "unknown",
+                error=e,
+                context={"user_input": user_input, "debug_info": debug_info},
+                user_id=user_id,
+                turn_id=len(self.dialogue_history) + 1
+            )
 
         debug_info["processing_time"] = time.time() - start_time
         return response, debug_info
@@ -326,8 +360,12 @@ class DialogueEngine:
             if self.device_manager and intent_result.get("intent") in {"device_control", "query_status"}:
                 try:
                     original_text = intent_result.get("original_text", "")
-                    # 优先使用意图识别出的地点实体，其次回退到基于文本的房间抽取
-                    room = self._extract_first_entity(intent_result.get("entities", []), "location") or self._extract_room(original_text)
+                    # 优先使用意图识别出的地点实体，其次回退到基于文本的房间抽取，最后使用上下文中的焦点location
+                    room = (
+                        self._extract_first_entity(intent_result.get("entities", []), "location") or 
+                        self._extract_room(original_text) or 
+                        self._get_context_room()
+                    )
                     device_type = self._extract_first_entity(intent_result.get("entities", []), "device")
                     action_kw = self._extract_first_entity(intent_result.get("entities", []), "action")
                     number_value = self._extract_number_value(intent_result.get("entities", []), original_text)
@@ -425,24 +463,43 @@ class DialogueEngine:
 
                     debug_info.setdefault("api_calls", [])
                     api_response = self.api_client.chat_completion(messages)
-                    debug_info["api_calls"].append(
-                        {
-                            "success": api_response.success,
-                            "content": api_response.content,
-                            "error": api_response.error_message,
-                            "response_time": api_response.response_time,
-                            "request": {"messages": messages, "model": self.api_client.model_id, "mode": mode},
-                            "response": api_response.raw_response,
-                        }
+                    api_call_info = {
+                        "success": api_response.success,
+                        "content": api_response.content,
+                        "error": api_response.error_message,
+                        "response_time": api_response.response_time,
+                        "request": {"messages": messages, "model": self.api_client.model_id, "mode": mode},
+                        "response": api_response.raw_response,
+                    }
+                    debug_info["api_calls"].append(api_call_info)
+                    
+                    # 记录API调用日志
+                    user_id = self.session_id.split("_")[0] if self.session_id and "_" in self.session_id else None
+                    self.dialogue_logger.log_api_call(
+                        session_id=self.session_id or "unknown",
+                        api_call_info=api_call_info,
+                        user_id=user_id,
+                        turn_id=len(self.dialogue_history) + 1
                     )
 
-                    base = (
-                        f"当前设备状态如下：{device_exec_summary}" if intent_result.get("intent") == "query_status" else f"好的，{device_exec_summary}"
-                    )
+                    # 智能响应合并：优先使用LLM响应，如果LLM失败则使用内部响应
                     if api_response.success and api_response.content:
-                        return f"{base}\n{api_response.content}"
+                        # LLM响应成功，检查是否需要合并
+                        llm_content = api_response.content.strip()
+                        # 如果LLM响应已经包含了设备操作的确认信息，直接使用LLM响应
+                        if any(keyword in llm_content for keyword in ["已开启", "已关闭", "已设置", "当前设备"]):
+                            return llm_content
+                        else:
+                            # LLM响应不包含设备操作确认，进行智能合并
+                            base = (
+                                f"当前设备状态如下：{device_exec_summary}" if intent_result.get("intent") == "query_status" else f"好的，{device_exec_summary}"
+                            )
+                            return f"{base} {llm_content}"
                     else:
-                        return base
+                        # LLM响应失败，使用内部响应
+                        return (
+                            f"当前设备状态如下：{device_exec_summary}" if intent_result.get("intent") == "query_status" else f"好的，{device_exec_summary}"
+                        )
                 finally:
                     if mode == "parallel" and original_timeout is not None:
                         self.api_client.timeout = original_timeout
@@ -452,15 +509,23 @@ class DialogueEngine:
                 messages.append({"role": "system", "content": f"设备执行/查询结果: {device_exec_summary}"})
 
             api_response = self.api_client.chat_completion(messages)
-            debug_info["api_calls"].append(
-                {
-                    "success": api_response.success,
-                    "content": api_response.content,
-                    "error": api_response.error_message,
-                    "response_time": api_response.response_time,
-                    "request": {"messages": messages, "model": self.api_client.model_id},
-                    "response": api_response.raw_response,
-                }
+            api_call_info = {
+                "success": api_response.success,
+                "content": api_response.content,
+                "error": api_response.error_message,
+                "response_time": api_response.response_time,
+                "request": {"messages": messages, "model": self.api_client.model_id},
+                "response": api_response.raw_response,
+            }
+            debug_info["api_calls"].append(api_call_info)
+            
+            # 记录API调用日志
+            user_id = self.session_id.split("_")[0] if self.session_id and "_" in self.session_id else None
+            self.dialogue_logger.log_api_call(
+                session_id=self.session_id or "unknown",
+                api_call_info=api_call_info,
+                user_id=user_id,
+                turn_id=len(self.dialogue_history) + 1
             )
 
             if api_response.success:
@@ -561,7 +626,7 @@ class DialogueEngine:
         
         # 1. 更新最后听到的意图和实体
         entities = intent_result.get("entities", [])
-        grouped_entities = {"devices": [], "actions": [], "values": []}
+        grouped_entities = {"devices": [], "actions": [], "values": [], "locations": []}
         for entity in entities:
             if isinstance(entity, dict):
                 entity_type = entity.get("entity_type", "unknown")
@@ -572,6 +637,8 @@ class DialogueEngine:
                     grouped_entities["actions"].append({"value": entity_value})
                 elif entity_type in ["number", "value"]:
                     grouped_entities["values"].append({"value": entity_value})
+                elif entity_type == "location":
+                    grouped_entities["locations"].append({"value": entity_value})
         
         self.context["last_intent"] = intent_result.get("intent")
         self.context["last_entities"] = grouped_entities # Using grouped
@@ -620,9 +687,21 @@ class DialogueEngine:
                         "last_intent": current_intent
                     }
                     updates["current_focus"] = "switched_to_" + device_entity
+                    
+                    # 记录焦点切换日志
+                    user_id = self.session_id.split("_")[0] if self.session_id and "_" in self.session_id else None
+                    self.dialogue_logger.log_focus_switch(
+                        session_id=self.session_id or "unknown",
+                        old_focus="None",
+                        new_focus=device_entity,
+                        reason="创建新焦点实体",
+                        user_id=user_id,
+                        turn_id=len(self.dialogue_history)
+                    )
             elif current_focus and current_focus.get("value") != device_entity:  # 如果焦点存在但与当前设备不同
                 # 使用智能判断是否切换焦点
                 if self._should_switch_focus(device_entity, current_focus, current_intent):
+                    old_focus_value = current_focus.get("value", "unknown")
                     self.context["current_focus"] = {
                         "value": device_entity,
                         "turn_count": 0,
@@ -630,6 +709,17 @@ class DialogueEngine:
                         "last_intent": current_intent
                     }
                     updates["current_focus"] = "switched_to_" + device_entity
+                    
+                    # 记录焦点切换日志
+                    user_id = self.session_id.split("_")[0] if self.session_id and "_" in self.session_id else None
+                    self.dialogue_logger.log_focus_switch(
+                        session_id=self.session_id or "unknown",
+                        old_focus=old_focus_value,
+                        new_focus=device_entity,
+                        reason=f"焦点切换：{current_intent}意图",
+                        user_id=user_id,
+                        turn_id=len(self.dialogue_history)
+                    )
             elif current_focus and current_focus.get("value") == device_entity:  # 如果焦点存在且与当前设备相同
                 # 重置计数器
                 current_focus["turn_count"] = 0
@@ -685,6 +775,17 @@ class DialogueEngine:
             # 保存会话到数据库
             self.memory_manager.save_session(self.session_id, self.dialogue_history, user_id)
             self.logger.info(f"Ended session: {self.session_id}")
+            
+            # 记录会话结束日志
+            self.dialogue_logger.log_session_event(
+                session_id=self.session_id,
+                event_type=EventType.SESSION_END,
+                user_id=user_id,
+                context={
+                    "total_turns": len(self.dialogue_history),
+                    "session_duration": time.time() - float(self.session_id.split("_")[-1]) if "_" in self.session_id else 0
+                }
+            )
 
         self.session_id = None
         self.current_state = DialogueState.IDLE
@@ -719,18 +820,96 @@ class DialogueEngine:
 
     def _extract_attribute(self, text: str) -> Optional[str]:
         text = text or ""
-        for attr in ["温度", "亮度", "音量", "风速"]:
+        # 动态获取属性列表
+        attributes = self._get_available_attributes()
+        for attr in attributes:
             if attr in text:
                 return attr
         return None
 
     def _extract_room(self, text: str) -> Optional[str]:
         text = text or ""
-        # 简单房间解析及同义归一
-        candidates = ["客厅", "主卧", "次卧", "卧室", "厨房", "书房", "阳台"]
+        # 动态获取房间列表
+        candidates = self._get_available_rooms()
         for c in candidates:
             if c in text:
                 if c == "卧室":
                     return "主卧"  # 归一为主卧，避免找不到设备
                 return c
+        return None
+    
+    def _get_available_attributes(self) -> List[str]:
+        """获取可用属性列表"""
+        if self.device_manager:
+            try:
+                # 基于设备类型动态生成属性列表
+                device_types = self.device_manager.get_available_device_types()
+                attributes = set()
+                
+                for device_type in device_types:
+                    if device_type == "灯":
+                        attributes.add("亮度")
+                    elif device_type == "空调":
+                        attributes.update(["温度", "风速"])
+                    elif device_type == "电视":
+                        attributes.add("音量")
+                    elif device_type == "风扇":
+                        attributes.add("风速")
+                
+                return list(attributes)
+            except Exception as e:
+                self.logger.warning(f"获取动态属性失败: {e}")
+        
+        # 回退到默认属性
+        return ["温度", "亮度", "音量", "风速"]
+    
+    def _get_available_rooms(self) -> List[str]:
+        """获取可用房间列表"""
+        if self.device_manager:
+            try:
+                rooms = self.device_manager.get_available_rooms()
+                # 添加常见同义词
+                extended_rooms = rooms.copy()
+                if "主卧" in rooms and "卧室" not in extended_rooms:
+                    extended_rooms.append("卧室")
+                return extended_rooms
+            except Exception as e:
+                self.logger.warning(f"获取动态房间失败: {e}")
+        
+        # 回退到默认房间
+        return ["客厅", "主卧", "次卧", "卧室", "厨房", "书房", "阳台"]
+
+    def _get_context_room(self) -> Optional[str]:
+        """从对话上下文中提取房间信息"""
+        # 首先检查current_focus中是否有location信息
+        current_focus = self.context.get("current_focus")
+        if current_focus and current_focus.get("entity_type") == "location":
+            return current_focus.get("value")
+        
+        # 其次检查last_entities中的location信息
+        last_entities = self.context.get("last_entities", {})
+        if "locations" in last_entities and last_entities["locations"]:
+            # 取最近的location
+            return last_entities["locations"][-1].get("value")
+        
+        # 从对话历史中查找最近提到的位置信息
+        for turn in reversed(self.dialogue_history[-5:]):  # 检查最近5轮对话
+            # 检查用户输入中的位置信息
+            user_input = turn.user_input.lower()
+            rooms = self._get_available_rooms()
+            for room in rooms:
+                # 检查是否明确提到在某个房间
+                if f"在{room}" in user_input or f"现在在{room}" in user_input or f"我在{room}" in user_input:
+                    self.logger.info(f"从历史对话中推断房间: {room}")
+                    return room
+            
+            # 检查turn的上下文中是否有位置信息
+            if hasattr(turn, 'context') and turn.context:
+                turn_entities = turn.context.get("last_entities", {})
+                if "locations" in turn_entities and turn_entities["locations"]:
+                    room = turn_entities["locations"][-1].get("value")
+                    if room:
+                        self.logger.info(f"从历史上下文中推断房间: {room}")
+                        return room
+        
         return None

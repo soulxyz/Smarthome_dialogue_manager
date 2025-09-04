@@ -20,6 +20,7 @@
 - Streamlit调试监控界面
 - API调用统计和性能监控
 - 错误处理和降级策略
+- 完整日志系统
 
 ## 技术架构
 
@@ -31,7 +32,9 @@ dialogue_manager/
 ├── intent.py          # 意图识别器 - 混合模式意图分类
 ├── memory.py          # 记忆管理器 - 数据持久化
 ├── api_client.py      # API客户端 - 硅基流动API集成
-└── clarification.py   # 澄清代理 - LLM智能澄清
+├── clarification.py   # 澄清代理 - LLM智能澄清
+├── device_manager.py  # 设备管理器 - 智能家居设备控制
+└── logger.py          # 日志记录器 - 结构化日志和监控
 ```
 
 ### 数据流
@@ -205,13 +208,33 @@ CMD ["streamlit", "run", "ui/app.py", "--server.port=8503", "--server.address=0.
    - 检查网络连接
    - 调整超时参数
 
-### 日志配置
+### 日志系统
 
-```python
-import logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger('dialogue_manager')
+本系统提供完整的结构化日志功能：
+
+#### 🖥️ UI界面查看
+```bash
+streamlit run ui/app.py
+# 访问 "📋 日志" 标签页
 ```
+
+#### 💻 命令行工具
+```bash
+# 查看会话详情
+python scripts/debug_logs.py session <session_id>
+
+# 查找错误日志
+python scripts/debug_logs.py errors --hours 24
+
+# 分析性能指标
+python scripts/debug_logs.py performance
+
+# 实时监控
+python scripts/debug_logs.py monitor
+```
+
+#### 📚 详细文档
+请参考 [日志系统使用指南](docs/LOGGING_GUIDE.md) 了解完整功能。
 
 ## 安全考虑
 

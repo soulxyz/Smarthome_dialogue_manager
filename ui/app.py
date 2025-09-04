@@ -17,6 +17,7 @@ from dialogue_manager.engine import EngineConfig  # noqa: E402
 
 import pandas as pd
 import streamlit as st
+from dialogue_manager.logger import get_dialogue_logger, EventType, LogLevel
 
 
 def init_session_state():
@@ -762,6 +763,253 @@ def display_device_panel():
         st.info("暂无事件")
 
 
+def display_log_panel():
+    """显示日志面板"""
+    st.header("📋 日志查看与分析")
+    
+    # 获取日志记录器
+    dialogue_logger = get_dialogue_logger()
+    
+    # 日志搜索控制
+    st.subheader("🔍 日志搜索")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        # 会话过滤
+        search_session_id = st.text_input("会话ID", placeholder="输入会话ID进行过滤")
+        
+        # 事件类型过滤
+        event_types = [e.value for e in EventType]
+        selected_event_type = st.selectbox("事件类型", ["全部"] + event_types)
+        if selected_event_type == "全部":
+            selected_event_type = None
+    
+    with col2:
+        # 日志级别过滤
+        log_levels = [l.value for l in LogLevel]
+        selected_log_level = st.selectbox("日志级别", ["全部"] + log_levels)
+        if selected_log_level == "全部":
+            selected_log_level = None
+        
+        # 关键词搜索
+        keyword = st.text_input("关键词搜索", placeholder="搜索消息或错误类型")
+    
+    with col3:
+        # 时间范围
+        time_range = st.selectbox("时间范围", ["最近1小时", "最近6小时", "最近24小时", "最近7天", "自定义"])
+        
+        if time_range == "自定义":
+            start_date = st.date_input("开始日期")
+            end_date = st.date_input("结束日期")
+            start_time = start_date.timestamp() if start_date else None
+            end_time = end_date.timestamp() + 86400 if end_date else None  # 加一天到结束
+        else:
+            # 预设时间范围
+            import time
+            current_time = time.time()
+            if time_range == "最近1小时":
+                start_time = current_time - 3600
+            elif time_range == "最近6小时":
+                start_time = current_time - 6 * 3600
+            elif time_range == "最近24小时":
+                start_time = current_time - 24 * 3600
+            elif time_range == "最近7天":
+                start_time = current_time - 7 * 24 * 3600
+            else:
+                start_time = None
+            end_time = current_time
+    
+    # 搜索按钮和结果限制
+    col_search, col_limit = st.columns([2, 1])
+    with col_search:
+        search_clicked = st.button("🔍 搜索日志", type="primary")
+    with col_limit:
+        result_limit = st.number_input("结果数量", min_value=10, max_value=1000, value=100, step=10)
+    
+    # 执行搜索
+    if search_clicked or st.session_state.get("auto_refresh_logs", False):
+        try:
+            logs = dialogue_logger.search_logs(
+                session_id=search_session_id if search_session_id else None,
+                event_type=selected_event_type,
+                level=selected_log_level,
+                start_time=start_time,
+                end_time=end_time,
+                keyword=keyword if keyword else None,
+                limit=result_limit
+            )
+            
+            if logs:
+                st.success(f"找到 {len(logs)} 条日志记录")
+                
+                # 日志统计
+                st.subheader("📊 日志统计")
+                col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+                
+                with col_stat1:
+                    total_logs = len(logs)
+                    st.metric("总日志数", total_logs)
+                
+                with col_stat2:
+                    error_logs = len([log for log in logs if log.level == LogLevel.ERROR.value])
+                    st.metric("错误日志", error_logs)
+                
+                with col_stat3:
+                    dialogue_turns = len([log for log in logs if log.event_type == EventType.DIALOGUE_TURN.value])
+                    st.metric("对话轮数", dialogue_turns)
+                
+                with col_stat4:
+                    api_calls = len([log for log in logs if log.event_type == EventType.API_CALL.value])
+                    st.metric("API调用", api_calls)
+                
+                # 日志详情展示
+                st.subheader("📝 日志详情")
+                
+                # 创建表格数据
+                log_data = []
+                for log in logs:
+                    log_data.append({
+                        "时间": datetime.fromtimestamp(log.timestamp).strftime("%m-%d %H:%M:%S"),
+                        "级别": log.level,
+                        "事件类型": log.event_type,
+                        "会话ID": log.session_id[-8:] if log.session_id else "N/A",  # 显示后8位
+                        "轮次": str(log.turn_id) if log.turn_id is not None else "N/A",  # 确保转换为字符串
+                        "意图": log.intent if log.intent else "N/A",
+                        "置信度": f"{log.confidence:.2f}" if log.confidence else "N/A",
+                        "处理时间": f"{log.processing_time:.2f}s" if log.processing_time else "N/A",
+                        "消息": log.message[:50] + "..." if len(log.message) > 50 else log.message
+                    })
+                
+                # 显示表格
+                df = pd.DataFrame(log_data)
+                st.dataframe(df, use_container_width=True, height=400)
+                
+                # 详细日志查看
+                st.subheader("🔍 详细日志查看")
+                
+                # 选择日志条目
+                log_options = [f"{i+1}. {log.event_type} - {datetime.fromtimestamp(log.timestamp).strftime('%H:%M:%S')} - {log.message[:30]}..." 
+                              for i, log in enumerate(logs)]
+                
+                if log_options:
+                    selected_log_index = st.selectbox("选择日志条目查看详情", range(len(log_options)), 
+                                                    format_func=lambda x: log_options[x])
+                    
+                    if selected_log_index < len(logs):
+                        selected_log = logs[selected_log_index]
+                        
+                        # 显示选中日志的详细信息
+                        col_detail1, col_detail2 = st.columns(2)
+                        
+                        with col_detail1:
+                            st.info("**基本信息**")
+                            st.write(f"**时间**: {datetime.fromtimestamp(selected_log.timestamp).strftime('%Y-%m-%d %H:%M:%S')}")
+                            st.write(f"**级别**: {selected_log.level}")
+                            st.write(f"**事件类型**: {selected_log.event_type}")
+                            st.write(f"**会话ID**: {selected_log.session_id}")
+                            st.write(f"**用户ID**: {selected_log.user_id or 'N/A'}")
+                            st.write(f"**轮次ID**: {selected_log.turn_id or 'N/A'}")
+                        
+                        with col_detail2:
+                            st.info("**性能信息**")
+                            st.write(f"**处理时间**: {selected_log.processing_time or 'N/A'}s")
+                            st.write(f"**意图**: {selected_log.intent or 'N/A'}")
+                            st.write(f"**置信度**: {selected_log.confidence or 'N/A'}")
+                            st.write(f"**API调用数**: {selected_log.api_calls_count or 'N/A'}")
+                            if selected_log.error_type:
+                                st.write(f"**错误类型**: {selected_log.error_type}")
+                        
+                        # 消息内容
+                        st.info("**消息内容**")
+                        st.code(selected_log.message, language="text")
+                        
+                        # 上下文数据
+                        if selected_log.context_data:
+                            st.info("**上下文数据**")
+                            st.json(selected_log.context_data)
+                        
+                        # 错误追踪
+                        if selected_log.error_traceback:
+                            st.error("**错误追踪**")
+                            st.code(selected_log.error_traceback, language="python")
+            else:
+                st.warning("未找到匹配的日志记录")
+                
+        except Exception as e:
+            st.error(f"搜索日志时出错: {str(e)}")
+    
+    # 日志管理功能
+    st.subheader("🛠️ 日志管理")
+    
+    col_mgmt1, col_mgmt2, col_mgmt3 = st.columns(3)
+    
+    with col_mgmt1:
+        # 会话摘要
+        if st.button("📊 会话摘要"):
+            if search_session_id:
+                try:
+                    summary = dialogue_logger.get_session_summary(search_session_id)
+                    if "error" not in summary:
+                        st.json(summary)
+                    else:
+                        st.error(summary["error"])
+                except Exception as e:
+                    st.error(f"获取会话摘要时出错: {str(e)}")
+            else:
+                st.warning("请先输入会话ID")
+    
+    with col_mgmt2:
+        # 导出日志
+        if st.button("📥 导出日志"):
+            try:
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False, encoding='utf-8') as f:
+                    temp_file = f.name
+                
+                dialogue_logger.export_logs(
+                    output_file=temp_file,
+                    session_id=search_session_id if search_session_id else None,
+                    start_time=start_time,
+                    end_time=end_time
+                )
+                
+                # 读取文件并提供下载
+                with open(temp_file, 'r', encoding='utf-8') as f:
+                    log_content = f.read()
+                
+                st.download_button(
+                    label="下载日志文件",
+                    data=log_content,
+                    file_name=f"dialogue_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl",
+                    mime="application/json"
+                )
+                
+                # 清理临时文件
+                import os
+                os.unlink(temp_file)
+                
+            except Exception as e:
+                st.error(f"导出日志时出错: {str(e)}")
+    
+    with col_mgmt3:
+        # 清理旧日志
+        if st.button("🗑️ 清理旧日志"):
+            try:
+                days_to_keep = st.number_input("保留天数", min_value=1, max_value=365, value=90)
+                if st.button("确认清理", type="secondary"):
+                    dialogue_logger.cleanup_old_logs(days_to_keep)
+                    st.success(f"已清理超过 {days_to_keep} 天的旧日志")
+            except Exception as e:
+                st.error(f"清理日志时出错: {str(e)}")
+    
+    # 自动刷新选项
+    st.subheader("⚙️ 显示设置")
+    auto_refresh = st.checkbox("自动刷新日志 (每30秒)", key="auto_refresh_logs")
+    if auto_refresh:
+        st.autorefresh(interval=30000, key="log_autorefresh")
+
+
 def main():
     """主函数."""
     # 配置页面设置（必须在任何Streamlit调用之前）
@@ -774,7 +1022,7 @@ def main():
     display_sidebar()
 
     # 主要内容区域
-    tab1, tab2, tab3, tab4 = st.tabs(["💬 对话", "🔍 调试", "📊 统计", "🧰 设备"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["💬 对话", "🔍 调试", "📊 统计", "🧰 设备", "📋 日志"])
 
     with tab1:
         display_chat_interface()
@@ -787,6 +1035,9 @@ def main():
 
     with tab4:
         display_device_panel()
+        
+    with tab5:
+        display_log_panel()
 
     # 页脚信息
     st.markdown("---")
