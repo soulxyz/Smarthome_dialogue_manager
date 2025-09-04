@@ -85,7 +85,9 @@ class FakeMemoryManager:
 
 @pytest.fixture()
 def intent_recognizer():
-    return IntentRecognizer()
+    from dialogue_manager.engine import EngineConfig
+    config = EngineConfig()
+    return IntentRecognizer(config)
 
 
 @pytest.fixture()

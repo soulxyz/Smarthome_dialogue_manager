@@ -33,6 +33,9 @@ class EngineConfig:
     parallel_timeout_ms: int = 1500          # 并行模式下等待LLM的超时时间（毫秒）
     focus_entity_turn_decay: int = 2         # 焦点实体在多少轮不被引用后失效
     device_patterns: Dict = field(default_factory=dict) # 设备正则模式
+    # P0核心可用性改进配置
+    enable_context_entity_fill: bool = True  # 是否启用上下文实体填充（省略消解）
+    focus_switch_policy: str = "conservative"  # 焦点切换策略：conservative | aggressive
 
     def update(self, **kwargs):
         """更新配置参数"""
@@ -187,6 +190,8 @@ class DialogueEngine:
                         # 增加澄清轮次
                         self.context["clarification_rounds"] = clarification_rounds + 1
                         response = self._handle_clarification(intent_result, debug_info)
+                        # 即使在澄清流程中也要更新上下文（特别是焦点实体）
+                        self._update_context(intent_result, debug_info)
                         self._transition_state(DialogueState.CLARIFYING, debug_info)
                 else:
                     # 成功识别意图，清除澄清轮次
@@ -500,6 +505,49 @@ class DialogueEngine:
 
         return messages
 
+    def _should_switch_focus(self, new_entity: str, current_focus: Dict, intent: str) -> bool:
+        """判断是否应该切换焦点实体
+        
+        Args:
+            new_entity: 新识别的设备实体
+            current_focus: 当前焦点实体信息
+            intent: 当前识别的意图
+            
+        Returns:
+            bool: 是否应该切换焦点
+        """
+        # 如果没有当前焦点或当前焦点无值，则切换
+        if not current_focus:
+            return True
+        
+        current_entity = current_focus.get("value")
+        if not current_entity:
+            return True
+        
+        # 如果是相同实体，不切换
+        if new_entity == current_entity:
+            return False
+        
+        # 根据策略决定切换行为
+        policy = getattr(self.config, "focus_switch_policy", "conservative")
+        
+        if policy == "conservative":
+            # 保守策略：查询不切换，控制才切换
+            if intent == "query_status":
+                return False
+            elif intent == "device_control":
+                return True
+            else:
+                return False
+        elif policy == "aggressive":
+            # 激进策略：只要有新设备就切换
+            return True
+        else:
+            # 默认保守策略
+            if intent == "device_control":
+                return True
+            return False
+
     def _update_context(self, intent_result: Dict, debug_info: Dict):
         """更新对话上下文"""
         updates = {}
@@ -531,23 +579,62 @@ class DialogueEngine:
         # 2. 实现焦点实体（Focus Entity）管理
         device_entity = self._extract_first_entity(entities, "device")
         current_focus = self.context.get("current_focus")
+        current_intent = intent_result.get("intent")
 
+        # 检查设备实体是否是从用户输入中提取的，而不是从焦点实体中补充的
+        entity_from_input = False
         if device_entity:
-            # 如果本次识别到设备，则更新为焦点
-            if not current_focus or current_focus.get("value") != device_entity:
-                self.context["current_focus"] = { "value": device_entity, "turn_count": 0 }
-            else: # Same device, reset counter
-                self.context["current_focus"]["turn_count"] = 0
-            updates["current_focus"] = self.context["current_focus"]
-        elif current_focus:
-            # 如果本次没有设备实体，但存在焦点，增加其轮次计数
-            current_focus["turn_count"] += 1
+            entity_obj = next((e for e in entities if isinstance(e, dict) and e.get("entity_type") == "device" and e.get("value") == device_entity), None)
+            entity_from_input = entity_obj and entity_obj.get("start_pos", -1) >= 0
+
+        # 如果存在焦点实体，先增加轮次计数
+        if current_focus:
+            # 只有当设备实体是从用户输入中提取的，才不增加轮次计数
+            if not (device_entity and entity_from_input and current_focus.get("value") == device_entity):
+                current_focus["turn_count"] += 1
+                self.logger.debug(f"焦点实体轮次增加: {current_focus['value']}, turn_count: {current_focus['turn_count']}")
+            
+            # 检查是否超过生命周期
             if current_focus["turn_count"] >= self.config.focus_entity_turn_decay:
                 # 如果超过生命周期，则移除焦点
+                self.logger.debug(f"焦点实体过期: {current_focus['value']}, turn_count: {current_focus['turn_count']}, decay: {self.config.focus_entity_turn_decay}")
                 self.context.pop("current_focus", None)
                 updates["current_focus"] = "removed"
-            else:
-                updates["current_focus"] = self.context["current_focus"]
+
+        # 处理设备实体 - 只有当设备实体来自用户输入时才创建或更新焦点
+        if device_entity and entity_from_input:
+            if "current_focus" not in self.context:  # 如果焦点已过期或不存在
+                # 使用智能判断是否创建新焦点
+                if self._should_switch_focus(device_entity, None, current_intent):
+                    self.context["current_focus"] = {
+                        "value": device_entity,
+                        "turn_count": 0,
+                        "confidence": 0.9,
+                        "last_intent": current_intent
+                    }
+                    updates["current_focus"] = "switched_to_" + device_entity
+            elif current_focus and current_focus.get("value") != device_entity:  # 如果焦点存在但与当前设备不同
+                # 使用智能判断是否切换焦点
+                if self._should_switch_focus(device_entity, current_focus, current_intent):
+                    self.context["current_focus"] = {
+                        "value": device_entity,
+                        "turn_count": 0,
+                        "confidence": 0.9,
+                        "last_intent": current_intent
+                    }
+                    updates["current_focus"] = "switched_to_" + device_entity
+            elif current_focus and current_focus.get("value") == device_entity:  # 如果焦点存在且与当前设备相同
+                # 重置计数器
+                current_focus["turn_count"] = 0
+                updates["current_focus"] = "refreshed"
+
+        # 更新debug信息
+        if "current_focus" in self.context:
+            updates["current_focus"] = self.context["current_focus"]
+        
+        # 确保焦点实体信息被正确更新到debug信息中
+        if "current_focus" in self.context:
+            updates["current_focus"] = self.context["current_focus"]
 
         # 3. 更新其他上下文信息
         if self.device_manager:
