@@ -6,7 +6,7 @@
 import logging
 import time
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
@@ -31,6 +31,8 @@ class EngineConfig:
     execution_mode: str = "internal_first"  # 可选: internal_first | llm_first | parallel
     always_record_api_traces: bool = True    # 即便走确定性路径也在 debug_info.api_calls 中记录一条伪调用
     parallel_timeout_ms: int = 1500          # 并行模式下等待LLM的超时时间（毫秒）
+    focus_entity_turn_decay: int = 2         # 焦点实体在多少轮不被引用后失效
+    device_patterns: Dict = field(default_factory=dict) # 设备正则模式
 
     def update(self, **kwargs):
         """更新配置参数"""
@@ -81,13 +83,18 @@ class DialogueEngine:
         """
         self.config = config or EngineConfig()
         self.api_client = SiliconFlowClient(api_key)
-        self.intent_recognizer = IntentRecognizer(confidence_threshold=self.config.confidence_threshold)
+        self.intent_recognizer = IntentRecognizer(
+            config=self.config,
+            confidence_threshold=self.config.confidence_threshold
+        )
         self.memory_manager = MemoryManager()
         self.clarification_agent = ClarificationAgent(
             self.api_client, self.intent_recognizer, confidence_threshold=self.config.confidence_threshold
         )
         # 设备管理器
         self.device_manager = DeviceManager() if getattr(self.config, 'enable_device_manager', False) else None
+        if self.device_manager:
+            self.config.device_patterns = self.device_manager.get_device_patterns()
 
         self.current_state = DialogueState.IDLE
         self.session_id = None
@@ -222,9 +229,6 @@ class DialogueEngine:
                     "type": "assistant"
                 }
                 self.memory_manager.save_dialogue(system_data)
-
-            # 更新上下文
-            self._update_context(intent_result, debug_info)
 
             # 状态转换：执行 -> 监听
             self._transition_state(DialogueState.LISTENING, debug_info)
@@ -497,42 +501,62 @@ class DialogueEngine:
         return messages
 
     def _update_context(self, intent_result: Dict, debug_info: Dict):
-        """更新对话上下文.
-
-        Args:
-            intent_result (Dict): 意图识别结果.
-            debug_info (Dict): 调试信息字典.
-        """
-        # 处理实体数据，将Entity对象列表转换为按类型分组的字典
+        """更新对话上下文"""
+        updates = {}
+        
+        # 1. 更新最后听到的意图和实体
         entities = intent_result.get("entities", [])
         grouped_entities = {"devices": [], "actions": [], "values": []}
-
-        # 如果entities是字典列表（来自intent_result["entities"]），需要重新构建Entity对象
         for entity in entities:
             if isinstance(entity, dict):
                 entity_type = entity.get("entity_type", "unknown")
                 entity_value = entity.get("value", "")
-
                 if entity_type == "device":
                     grouped_entities["devices"].append({"value": entity_value})
                 elif entity_type == "action":
                     grouped_entities["actions"].append({"value": entity_value})
                 elif entity_type in ["number", "value"]:
                     grouped_entities["values"].append({"value": entity_value})
+        
+        self.context["last_intent"] = intent_result.get("intent")
+        self.context["last_entities"] = grouped_entities # Using grouped
+        self.context["last_possible_intents"] = intent_result.get("possible_intents", [])
+        self.context["turn_count"] = len(self.dialogue_history)
 
-        updates = {
-            "last_intent": intent_result.get("intent"),
-            "last_entities": grouped_entities,
-            "last_possible_intents": intent_result.get("possible_intents", []),
-            "turn_count": len(self.dialogue_history),
-        }
-        # 注入设备状态快照（若启用设备管理器）
+        updates["last_intent"] = self.context["last_intent"]
+        updates["last_entities"] = self.context["last_entities"]
+        updates["last_possible_intents"] = self.context["last_possible_intents"]
+        updates["turn_count"] = self.context["turn_count"]
+
+        # 2. 实现焦点实体（Focus Entity）管理
+        device_entity = self._extract_first_entity(entities, "device")
+        current_focus = self.context.get("current_focus")
+
+        if device_entity:
+            # 如果本次识别到设备，则更新为焦点
+            if not current_focus or current_focus.get("value") != device_entity:
+                self.context["current_focus"] = { "value": device_entity, "turn_count": 0 }
+            else: # Same device, reset counter
+                self.context["current_focus"]["turn_count"] = 0
+            updates["current_focus"] = self.context["current_focus"]
+        elif current_focus:
+            # 如果本次没有设备实体，但存在焦点，增加其轮次计数
+            current_focus["turn_count"] += 1
+            if current_focus["turn_count"] >= self.config.focus_entity_turn_decay:
+                # 如果超过生命周期，则移除焦点
+                self.context.pop("current_focus", None)
+                updates["current_focus"] = "removed"
+            else:
+                updates["current_focus"] = self.context["current_focus"]
+
+        # 3. 更新其他上下文信息
         if self.device_manager:
             try:
-                updates["device_snapshot"] = self.device_manager.snapshot()
+                self.context["device_snapshot"] = self.device_manager.snapshot()
+                updates["device_snapshot"] = self.context["device_snapshot"]
             except Exception as e:
                 self.logger.debug(f"设备快照失败: {e}")
-        # 记录设备执行/查询的最后摘要，供下一轮同步给模型
+        
         last_msg = None
         if isinstance(debug_info.get("device_action_result"), dict):
             last_msg = debug_info["device_action_result"].get("message")
@@ -541,9 +565,9 @@ class DialogueEngine:
         if not last_msg and debug_info.get("device_summary"):
             last_msg = debug_info.get("device_summary")
         if last_msg:
+            self.context["last_device_result"] = last_msg
             updates["last_device_result"] = last_msg
-
-        self.context.update(updates)
+        
         debug_info["context_updates"] = updates
 
     def get_session_info(self) -> Dict:
@@ -596,6 +620,8 @@ class DialogueEngine:
             except Exception:
                 return None
         return None
+
+
 
     def _extract_attribute(self, text: str) -> Optional[str]:
         text = text or ""

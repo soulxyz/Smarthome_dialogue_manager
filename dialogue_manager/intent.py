@@ -50,12 +50,14 @@ class IntentResult:
 class IntentRecognizer:
     """意图识别器"""
 
-    def __init__(self, confidence_threshold: float = 0.7):
+    def __init__(self, config, confidence_threshold: float = 0.7):
         """初始化意图识别器
 
         Args:
+            config: 引擎配置对象
             confidence_threshold: 置信度阈值，低于此值需要澄清
         """
+        self.config = config
         self.confidence_threshold = confidence_threshold
         self.logger = logging.getLogger(__name__)
 
@@ -132,6 +134,14 @@ class IntentRecognizer:
             "减少": ["减少", "降低", "调低", "减小"],
         }
 
+        # 合并来自 config 的设备模式
+        if hasattr(self.config, 'device_patterns') and self.config.device_patterns:
+            for device_type, patterns in self.config.device_patterns.items():
+                if device_type in self.device_entities:
+                    self.device_entities[device_type] = list(set(self.device_entities[device_type] + patterns))
+                else:
+                    self.device_entities[device_type] = patterns
+
     def recognize(self, user_input: str, context: Dict, history: List) -> Dict:
         """识别用户输入的意图
 
@@ -144,20 +154,32 @@ class IntentRecognizer:
             Dict: 意图识别结果
         """
         try:
-            # 预处理输入
-            processed_input = self._preprocess_input(user_input)
+            # 预处理输入，处理代词
+            processed_input, pronoun_info = self._preprocess_input(user_input)
+
+            # 如果检测到代词，尝试用焦点实体替换
+            if pronoun_info["has_pronoun"] and "current_focus" in context:
+                focus_entity = context["current_focus"].get("value")
+                if focus_entity:
+                    # 将占位符替换为焦点实体的值
+                    processed_input = processed_input.replace(pronoun_info["placeholder"], focus_entity)
+                    self.logger.info(f"Pronoun replaced: {user_input} -> {processed_input}")
+                else:
+                    self.logger.warning("Focus entity found but has no value")
+            elif pronoun_info["has_pronoun"]:
+                self.logger.warning("Pronoun detected but no current_focus in context")
 
             # 意图分类
             intent_scores = self._classify_intent(processed_input)
 
-            # 实体抽取（结合历史记录）
-            entities = self._extract_entities_with_history(processed_input, history)
-
             # 上下文增强
-            intent_scores = self._enhance_with_context(user_input, intent_scores, context, history)
+            intent_scores = self._enhance_with_context(processed_input, intent_scores, context, history)
 
             # 选择最佳意图
             best_intent, confidence = self._select_best_intent(intent_scores)
+
+            # 实体抽取（结合上下文和历史记录）
+            entities = self._extract_entities_with_history(processed_input, best_intent, context)
 
             # 判断是否需要澄清
             need_clarification = confidence < self.confidence_threshold
@@ -195,13 +217,26 @@ class IntentRecognizer:
                 "original_text": user_input,
             }
 
-    def _preprocess_input(self, user_input: str) -> str:
-        """预处理用户输入"""
-        # 转换为小写，去除多余空格
+    def _preprocess_input(self, user_input: str) -> Tuple[str, Dict]:
+        """预处理用户输入，并检测代词"""
+        pronoun_info = {"has_pronoun": False, "placeholder": "__PRONOUN__"}
+        # 常见代词列表
+        pronouns = ["它", "他", "她", "这个", "那个", "it", "this", "that"]
+        
         processed = user_input.strip().lower()
-        # 去除标点符号（保留中文标点）
-        processed = re.sub(r"[^\u4e00-\u9fa5a-zA-Z0-9\s]", "", processed)
-        return processed
+        
+        # 代词替换
+        for p in pronouns:
+            if p in processed:
+                processed = processed.replace(p, pronoun_info["placeholder"])
+                pronoun_info["has_pronoun"] = True
+                self.logger.info(f"Pronoun detected: '{p}' -> '{pronoun_info['placeholder']}' in '{user_input}'")
+                break # 只替换第一个找到的代词
+
+        # 去除标点符号（保留中文标点、下划线和数字）
+        processed = re.sub(r"[^\u4e00-\u9fa5a-zA-Z0-9\s_]", "", processed)
+        self.logger.info(f"Preprocessed input: '{user_input}' -> '{processed}', pronoun_info: {pronoun_info}")
+        return processed, pronoun_info
 
     def set_session_patterns(self, patterns: Dict[str, List[str]]):
         """注入会话级自学习正则模式.
@@ -375,29 +410,51 @@ class IntentRecognizer:
 
         return intent_scores
         
-    def _extract_entities_with_history(self, user_input: str, history: List) -> List[Entity]:
-        """结合历史记录提取实体"""
-        entities = self._extract_entities(user_input)
-        
-        # 从历史记录中提取相关实体
-        if history:
-            for turn in history[-2:]:  # 检查最近2轮对话
-                if isinstance(turn, dict) and turn.get('entities'):
-                    for hist_entity in turn['entities']:
-                        if isinstance(hist_entity, dict):
-                            # 如果当前输入中没有地点实体，但历史中有，则继承
-                            if (hist_entity.get('type') == 'location' and 
-                                not any(e.entity_type == 'location' for e in entities)):
-                                entity = Entity(
-                                    name=hist_entity['value'],
-                                    value=hist_entity['value'],
-                                    entity_type='location',
-                                    confidence=0.7,  # 历史实体置信度稍低
-                                    start_pos=0,
-                                    end_pos=0,
-                                )
-                                entities.append(entity)
-        
+    def _extract_entities_with_history(
+        self, text: str, intent: str, context: Dict = None
+    ) -> List[Entity]:
+        """从历史记录中提取实体并增强当前实体列表"""
+        entities = self._extract_entities(text)
+        if not context:
+            return entities
+
+        # 继承设备
+        has_device = any(e.entity_type == "device" for e in entities)
+        if intent == "device_control" and not has_device and "current_focus" in context:
+            focus_entity = context.get("current_focus")
+            if focus_entity and focus_entity.get("turn_count", 0) < self.config.focus_entity_turn_decay:
+                entities.append(
+                    Entity(
+                        name=focus_entity.get("value"),
+                        value=focus_entity.get("value"),
+                        entity_type="device",
+                        confidence=0.85,
+                        start_pos=-1,
+                        end_pos=-1,
+                    )
+                )
+
+        # 继承位置
+        has_location = any(e.entity_type == "location" for e in entities)
+        if not has_location and "last_entities" in context:
+            last_entities = context.get("last_entities", [])
+            # 确保 last_entities 是列表
+            if not isinstance(last_entities, list):
+                last_entities = []
+            
+            for entity in last_entities:
+                if entity.get("entity_type") == "location":
+                    entities.append(
+                        Entity(
+                            name=entity.get("value"),
+                            value=entity.get("value"),
+                            entity_type="location",
+                            confidence=0.7,  # 继承的位置信息置信度可以稍低
+                            start_pos=-1,
+                            end_pos=-1,
+                        )
+                    )
+                    break  # 只继承最近的一个位置
         return entities
 
     def _select_best_intent(self, intent_scores: Dict[str, float]) -> Tuple[str, float]:

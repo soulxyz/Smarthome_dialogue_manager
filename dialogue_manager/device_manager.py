@@ -461,3 +461,13 @@ class DeviceManager:
         }
         key = aliases.get(attribute, attribute)
         return device.state.get(key)
+
+    def get_device_patterns(self) -> Dict[str, str]:
+        """返回设备名称到类型的映射，用于意图识别"""
+        patterns = {}
+        for device in self.devices:
+            patterns[device.name] = device.device_type
+            # 同时注册带房间的名称，例如 "客厅灯"
+            if device.room:
+                patterns[f"{device.room}{device.name}"] = device.device_type
+        return patterns
