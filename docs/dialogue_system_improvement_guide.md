@@ -954,7 +954,7 @@ monitoring:
 - 灰度发布，持续监控关键指标
 
 ### 模型型号备注
-- **当前使用模型**：zai-org/GLM-4.5-Air（SiliconFlow）
+- **当前使用模型**：moonshotai/Kimi-K2-Instruct（SiliconFlow）
 - **配置位置**：`dialogue_manager/api_client.py` 中的 `model_id`
 - **优化建议**：后续可根据成本/时延需求在同接口层做可配置切换
 

@@ -181,7 +181,7 @@ def test_silicon_flow_client_initialization():
     client = SiliconFlowClient(api_key="test-key")
     assert client.api_key == "test-key"
     assert client.base_url == "https://api.siliconflow.cn/v1"
-    assert client.model_id == "zai-org/GLM-4.5-Air"
+    assert client.model_id == "moonshotai/Kimi-K2-Instruct"
     assert client.timeout == 30
     assert client.max_retries == 3
     assert "Authorization" in client.session.headers
@@ -215,7 +215,7 @@ def test_chat_completion_success(mock_post):
             "completion_tokens": 8,
             "total_tokens": 18
         },
-        "model": "zai-org/GLM-4.5-Air"
+        "model": "moonshotai/Kimi-K2-Instruct"
     }
     mock_post.return_value = mock_response
     client = SiliconFlowClient(api_key="test-key")
@@ -224,7 +224,7 @@ def test_chat_completion_success(mock_post):
     assert result.success is True
     assert result.content == "Hello, how can I help you?"
     assert result.usage["total_tokens"] == 18
-    assert result.model == "zai-org/GLM-4.5-Air"
+    assert result.model == "moonshotai/Kimi-K2-Instruct"
     assert client.stats["successful_requests"] == 1
     assert client.stats["total_requests"] == 1
 
