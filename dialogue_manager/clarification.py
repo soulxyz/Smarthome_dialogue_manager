@@ -142,13 +142,16 @@ class ClarificationAgent:
 
         try:
             # 为澄清任务使用较短的超时时间，避免用户等待过久
-            original_timeout = self.api_client.timeout
-            self.api_client.timeout = 10  # 临时设置为10秒超时
-
-            resp = self.api_client.chat_completion(messages, max_tokens=500, temperature=0.3)
-
-            # 恢复原始超时设置
-            self.api_client.timeout = original_timeout
+            # 使用线程安全的方式保存和恢复超时设置
+            import threading
+            with threading.Lock():
+                original_timeout = self.api_client.timeout
+                self.api_client.timeout = 10  # 临时设置为10秒超时
+                try:
+                    resp = self.api_client.chat_completion(messages, max_tokens=500, temperature=0.3)
+                finally:
+                    # 确保总是恢复原始超时设置
+                    self.api_client.timeout = original_timeout
 
             if not resp.success:
                 logger.error("Clarification LLM 失败: %s", resp.error_message)
@@ -176,9 +179,6 @@ class ClarificationAgent:
                 return self._generate_fallback_candidates(user_input, context, history)
 
         except Exception as exc:
-            # 确保恢复原始超时设置
-            if "original_timeout" in locals():
-                self.api_client.timeout = original_timeout
             logger.error("解析 Clarification LLM 输出失败: %s", exc)
             logger.exception("详细错误信息:")
             logger.info("使用降级策略生成候选")

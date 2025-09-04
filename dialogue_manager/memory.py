@@ -95,8 +95,8 @@ class ConnectionPool:
                     if self.created_connections < self.max_connections:
                         conn = self._create_connection()
                     else:
-                        # 等待可用连接
-                        conn = self.pool.get(timeout=5)
+                        # 等待可用连接（增加超时时间）
+                        conn = self.pool.get(timeout=30)  # 增加到30秒
 
             yield conn
 

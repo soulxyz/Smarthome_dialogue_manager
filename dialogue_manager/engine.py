@@ -37,12 +37,22 @@ class EngineConfig:
     # P0核心可用性改进配置
     enable_context_entity_fill: bool = True  # 是否启用上下文实体填充（省略消解）
     focus_switch_policy: str = "conservative"  # 焦点切换策略：conservative | aggressive
+    max_history_length: int = 50  # 最大对话历史长度（防止内存泄漏）
 
     def update(self, **kwargs):
         """更新配置参数"""
         for key, value in kwargs.items():
             if hasattr(self, key):
+                # 添加配置验证
+                if key == "confidence_threshold" and not (0.0 <= value <= 1.0):
+                    raise ValueError(f"confidence_threshold必须在0.0-1.0之间，当前值: {value}")
+                elif key == "max_turns" and not (1 <= value <= 100):
+                    raise ValueError(f"max_turns必须在1-100之间，当前值: {value}")
+                elif key == "execution_mode" and value not in ["internal_first", "llm_first", "parallel"]:
+                    raise ValueError(f"execution_mode必须是internal_first、llm_first或parallel之一，当前值: {value}")
                 setattr(self, key, value)
+            else:
+                raise ValueError(f"未知的配置参数: {key}")
 
 
 class DialogueState(Enum):
@@ -213,9 +223,12 @@ class DialogueEngine:
                     self._update_context(intent_result, debug_info)
                     self._transition_state(DialogueState.EXECUTING, debug_info)
 
+            # 计算当前轮次ID（确保一致性）
+            current_turn_id = len(self.dialogue_history) + 1
+            
             # 记录对话轮次
             turn = DialogueTurn(
-                turn_id=len(self.dialogue_history) + 1,
+                turn_id=current_turn_id,
                 user_input=user_input,
                 system_response=response,
                 intent=intent_result.get("intent"),
@@ -223,6 +236,12 @@ class DialogueEngine:
                 context=self.context.copy(),
             )
             self.dialogue_history.append(turn)
+            
+            # 防止内存泄漏：限制对话历史长度
+            max_history_length = getattr(self.config, 'max_history_length', 50)
+            if len(self.dialogue_history) > max_history_length:
+                # 只保留最近的对话记录
+                self.dialogue_history = self.dialogue_history[-max_history_length:]
             
             # 保存对话记录到内存管理器（分别保存用户输入和系统响应）
             if hasattr(self.memory_manager, 'save_dialogue'):
@@ -255,7 +274,7 @@ class DialogueEngine:
             user_id = self.session_id.split("_")[0] if self.session_id and "_" in self.session_id else None
             self.dialogue_logger.log_dialogue_turn(
                 session_id=self.session_id or "unknown",
-                turn_id=len(self.dialogue_history),
+                turn_id=current_turn_id,
                 user_input=user_input,
                 system_response=response,
                 debug_info=debug_info,
@@ -274,7 +293,7 @@ class DialogueEngine:
                 error=e,
                 context={"user_input": user_input, "debug_info": debug_info},
                 user_id=user_id,
-                turn_id=len(self.dialogue_history) + 1
+                turn_id=current_turn_id
             )
 
         debug_info["processing_time"] = time.time() - start_time
@@ -479,7 +498,7 @@ class DialogueEngine:
                         session_id=self.session_id or "unknown",
                         api_call_info=api_call_info,
                         user_id=user_id,
-                        turn_id=len(self.dialogue_history) + 1
+                        turn_id=current_turn_id
                     )
 
                     # 智能响应合并：优先使用LLM响应，如果LLM失败则使用内部响应
@@ -525,7 +544,7 @@ class DialogueEngine:
                 session_id=self.session_id or "unknown",
                 api_call_info=api_call_info,
                 user_id=user_id,
-                turn_id=len(self.dialogue_history) + 1
+                turn_id=current_turn_id
             )
 
             if api_response.success:
@@ -696,7 +715,7 @@ class DialogueEngine:
                         new_focus=device_entity,
                         reason="创建新焦点实体",
                         user_id=user_id,
-                        turn_id=len(self.dialogue_history)
+                        turn_id=current_turn_id
                     )
             elif current_focus and current_focus.get("value") != device_entity:  # 如果焦点存在但与当前设备不同
                 # 使用智能判断是否切换焦点
@@ -718,7 +737,7 @@ class DialogueEngine:
                         new_focus=device_entity,
                         reason=f"焦点切换：{current_intent}意图",
                         user_id=user_id,
-                        turn_id=len(self.dialogue_history)
+                        turn_id=current_turn_id
                     )
             elif current_focus and current_focus.get("value") == device_entity:  # 如果焦点存在且与当前设备相同
                 # 重置计数器
@@ -846,15 +865,17 @@ class DialogueEngine:
                 device_types = self.device_manager.get_available_device_types()
                 attributes = set()
                 
+                # 定义设备类型到属性的映射
+                device_to_attributes = {
+                    "灯": ["亮度"],
+                    "空调": ["温度", "风速"],
+                    "电视": ["音量"],
+                    "风扇": ["风速"]
+                }
+                
                 for device_type in device_types:
-                    if device_type == "灯":
-                        attributes.add("亮度")
-                    elif device_type == "空调":
-                        attributes.update(["温度", "风速"])
-                    elif device_type == "电视":
-                        attributes.add("音量")
-                    elif device_type == "风扇":
-                        attributes.add("风速")
+                    if device_type in device_to_attributes:
+                        attributes.update(device_to_attributes[device_type])
                 
                 return list(attributes)
             except Exception as e:

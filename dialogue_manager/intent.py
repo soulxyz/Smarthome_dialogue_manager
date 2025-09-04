@@ -68,30 +68,32 @@ class IntentRecognizer:
         self._init_patterns()
         # 动态模式：会话级新增正则 {intent: [patterns]}
         self.session_patterns: Dict[str, List[str]] = {}
+        
+        # 完成初始化后，更新动态模式
+        self._update_dynamic_patterns()
 
     def _init_patterns(self):
-        """初始化识别模式"""
-        # 设备控制相关关键词
+        """初始化识别模式（基础模式，不包含动态内容）"""
+        # 基础设备控制关键词（不包含具体设备名称）
         self.device_control_patterns = [
-            r"(打开|开启|启动|开).*?(灯|空调|电视|风扇|热水器|洗衣机)",
-            r"(关闭|关掉|关|停止).*?(灯|空调|电视|风扇|热水器|洗衣机)",
+            r"(打开|开启|启动|开)",
+            r"(关闭|关掉|关|停止)",
             r"(调节|设置|调到).*?(温度|亮度|音量|风速)",
             r"(增加|提高|调高).*?(温度|亮度|音量|风速)",
             r"(减少|降低|调低).*?(温度|亮度|音量|风速)",
         ]
 
-        # 查询状态相关关键词
+        # 基础查询状态关键词
         self.query_patterns = [
             r"(查看|查询|看看|检查).*?(状态|情况|温度|湿度)",
             r".*?(怎么样|如何|状态|情况)",
             r"(现在|当前).*?(温度|湿度|状态)",
-            # 新增：设备发现/能力查询类表达
+            # 设备发现/能力查询类表达
             r"(有什么|有哪些).*?(设备|家电)",
             r"(设备|家电).*?(列表|有哪些|有什么)",
             r"(能操作|可操作|能控制|可以控制).*?(设备|家电)",
-            r"(主卧|次卧|卧室|客厅|厨房|书房|阳台).*?(有什么|有哪些).*?(设备|家电)",
-            # 新增：位置声明类表达
-            r"(我|现在).*?(在|位于).*?(主卧|次卧|卧室|客厅|厨房|书房|阳台)",
+            # 位置声明类表达（动态房间名称将在_update_dynamic_patterns中添加）
+            r"(我|现在).*?(在|位于)",
         ]
 
         # 场景控制相关关键词
@@ -120,24 +122,9 @@ class IntentRecognizer:
             r"(明天|今天|后天|昨天).*?(呢|怎么样|如何)"
         ]
 
-        # 设备实体模式
-        self.device_entities = {
-            "灯": ["灯", "台灯", "吊灯", "壁灯", "射灯", "客厅灯", "卧室灯", "厨房灯"],
-            "空调": ["空调", "冷气", "暖气", "制冷", "制热"],
-            "电视": ["电视", "电视机", "TV", "显示器"],
-            "风扇": ["风扇", "吊扇", "落地扇", "台扇"],
-            "热水器": ["热水器", "热水", "水温"],
-            "洗衣机": ["洗衣机", "洗衣", "脱水", "甩干"],
-        }
-
-        # 动作实体模式
-        self.action_entities = {
-            "开启": ["打开", "开启", "启动", "开"],
-            "关闭": ["关闭", "关掉", "关", "停止"],
-            "调节": ["调节", "设置", "调到", "调整"],
-            "增加": ["增加", "提高", "调高", "加大"],
-            "减少": ["减少", "降低", "调低", "减小"],
-        }
+        # 初始化设备和动作实体（从设备管理器动态获取）
+        self.device_entities = {}
+        self.action_entities = {}
 
         # 合并来自 config 的设备模式
         if hasattr(self.config, 'device_patterns') and self.config.device_patterns:
@@ -324,16 +311,47 @@ class IntentRecognizer:
         
         # 如果只有设备名，没有其他意图匹配，则认为是设备控制意图
         if max(scores.values()) == 0.0:
-            # 检查是否包含设备名
-            device_patterns = [
-                r'灯|电视|空调|风扇|音响|冰箱|洗衣机|热水器|窗帘|门锁',
-                r'客厅|主卧|次卧|厨房|书房|阳台'
-            ]
-            has_device = any(re.search(pattern, user_input) for pattern in device_patterns)
+            # 动态检查是否包含设备名和房间名
+            has_device = self._check_contains_device_or_room(user_input)
             if has_device:
                 scores[IntentType.DEVICE_CONTROL.value] = 0.6
         
         return scores
+
+    def _check_contains_device_or_room(self, user_input: str) -> bool:
+        """检查输入是否包含设备名或房间名"""
+        if not self.device_manager:
+            # 回退到硬编码检查
+            device_patterns = [
+                r'灯|电视|空调|风扇|音响|冰箱|洗衣机|热水器|窗帘|门锁',
+                r'客厅|主卧|次卧|厨房|书房|阳台'
+            ]
+            return any(re.search(pattern, user_input) for pattern in device_patterns)
+        
+        try:
+            # 检查设备类型
+            device_types = self.device_manager.get_available_device_types()
+            for device_type in device_types:
+                if device_type in user_input:
+                    return True
+            
+            # 检查房间名
+            rooms = self.device_manager.get_available_rooms()
+            for room in rooms:
+                if room in user_input:
+                    return True
+                    
+            # 检查设备实例名称
+            devices = self.device_manager.get_all_devices()
+            for device in devices:
+                if device.get('name', '') in user_input or device.get('full_name', '') in user_input:
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to check device/room names: {e}")
+            return False
 
     def _extract_entities(self, user_input: str) -> List[Entity]:
         """实体抽取, 避免重叠实体"""
@@ -442,37 +460,101 @@ class IntentRecognizer:
     def _update_dynamic_device_entities(self):
         """从设备管理器更新动态设备实体"""
         if not self.device_manager:
+            # 回退到基础硬编码实体
+            self.device_entities = {
+                "灯": ["灯", "台灯", "吊灯", "壁灯", "射灯"],
+                "空调": ["空调", "冷气", "暖气", "制冷", "制热"],
+                "电视": ["电视", "电视机", "TV", "显示器"],
+                "风扇": ["风扇", "吊扇", "落地扇", "台扇"],
+            }
+            self.action_entities = {
+                "开启": ["打开", "开启", "启动", "开"],
+                "关闭": ["关闭", "关掉", "关", "停止"],
+                "调节": ["调节", "设置", "调到", "调整"],
+                "增加": ["增加", "提高", "调高", "加大"],
+                "减少": ["减少", "降低", "调低", "减小"],
+            }
             return
             
         try:
-            # 获取所有设备
+            # 从设备管理器获取设备同义词
+            device_synonyms = self.device_manager.get_device_synonyms()
+            self.device_entities = device_synonyms.copy()
+            
+            # 获取所有设备实例，添加实际设备名
             devices = self.device_manager.get_all_devices()
             
-            # 按设备类型分组
-            device_types = {}
+            # 按设备类型分组，添加实际设备名称和房间组合名称
             for device in devices:
                 device_type = device.get('type', '未知设备')
                 device_name = device.get('name', '')
+                room = device.get('room', '')
+                full_name = device.get('full_name', '')
                 
-                if device_type not in device_types:
-                    device_types[device_type] = []
+                if device_type not in self.device_entities:
+                    self.device_entities[device_type] = []
                 
-                if device_name:
-                    device_types[device_type].append(device_name)
+                # 添加设备名称
+                if device_name and device_name not in self.device_entities[device_type]:
+                    self.device_entities[device_type].append(device_name)
+                
+                # 添加房间+设备名称组合（如"客厅灯"）
+                if full_name and full_name not in self.device_entities[device_type]:
+                    self.device_entities[device_type].append(full_name)
             
-            # 更新设备实体映射
-            for device_type, device_names in device_types.items():
-                if device_type in self.device_entities:
-                    # 合并现有的和动态的设备名称
-                    self.device_entities[device_type] = list(set(self.device_entities[device_type] + device_names))
-                else:
-                    # 添加新的设备类型
-                    self.device_entities[device_type] = device_names
+            # 获取动作同义词
+            action_synonyms = self.device_manager.get_action_synonyms()
+            self.action_entities = action_synonyms.copy()
                     
-            self.logger.info(f"Updated device entities from device manager: {device_types}")
+            self.logger.info(f"Updated device entities from device manager: {self.device_entities}")
+            self.logger.info(f"Updated action entities from device manager: {self.action_entities}")
             
         except Exception as e:
             self.logger.warning(f"Failed to update dynamic device entities: {e}")
+            # 回退到基础硬编码实体
+            self.device_entities = {
+                "灯": ["灯", "台灯", "吊灯", "壁灯", "射灯"],
+                "空调": ["空调", "冷气", "暖气", "制冷", "制热"],
+                "电视": ["电视", "电视机", "TV", "显示器"],
+                "风扇": ["风扇", "吊扇", "落地扇", "台扇"],
+            }
+            self.action_entities = {
+                "开启": ["打开", "开启", "启动", "开"],
+                "关闭": ["关闭", "关掉", "关", "停止"],
+                "调节": ["调节", "设置", "调到", "调整"],
+                "增加": ["增加", "提高", "调高", "加大"],
+                "减少": ["减少", "降低", "调低", "减小"],
+            }
+    
+    def _update_dynamic_patterns(self):
+        """动态更新识别模式，包含设备和房间名称"""
+        if not self.device_manager:
+            return
+            
+        try:
+            # 获取可用的设备类型和房间
+            device_types = self.device_manager.get_available_device_types()
+            rooms = self.device_manager.get_available_rooms()
+            
+            # 生成动态设备控制模式
+            device_pattern = "|".join(device_types) if device_types else "设备"
+            self.device_control_patterns.extend([
+                f"(打开|开启|启动|开).*?({device_pattern})",
+                f"(关闭|关掉|关|停止).*?({device_pattern})",
+            ])
+            
+            # 生成动态查询模式（包含房间）
+            if rooms:
+                room_pattern = "|".join(rooms)
+                self.query_patterns.extend([
+                    f"({room_pattern}).*?(有什么|有哪些).*?(设备|家电)",
+                    f"(我|现在).*?(在|位于).*?({room_pattern})",
+                ])
+            
+            self.logger.info(f"Updated dynamic patterns with device types: {device_types} and rooms: {rooms}")
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to update dynamic patterns: {e}")
     
     def _update_dynamic_keywords(self):
         """动态更新设备和动作关键词"""

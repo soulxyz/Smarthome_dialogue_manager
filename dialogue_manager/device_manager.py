@@ -511,3 +511,15 @@ class DeviceManager:
             "增加": ["增加", "提高", "调高", "加大"],
             "减少": ["减少", "降低", "调低", "减小"]
         }
+    
+    def get_all_devices(self) -> List[Dict[str, str]]:
+        """返回所有设备的详细信息"""
+        return [
+            {
+                "name": device.name,
+                "type": device.device_type,
+                "room": device.room,
+                "full_name": f"{device.room}{device.name}"
+            }
+            for device in self.devices
+        ]
