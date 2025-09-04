@@ -467,13 +467,20 @@ class DialogueEngine:
                 return api_response.content or (device_exec_summary or "好的，我明白了。")
             else:
                 self.logger.error(f"API调用失败: {api_response.error_message}")
+                self.logger.error(f"请求详情: 模型={self.api_client.model_id}, 超时设置={self.api_client.timeout}秒")
                 # 退化为确定性反馈
                 if device_exec_summary:
+                    self.logger.info(f"使用设备执行结果作为降级响应: {device_exec_summary}")
                     return device_exec_summary
-                return "抱歉，我现在无法处理您的请求，请稍后再试。"
+                self.logger.info("无设备执行结果，返回通用错误消息")
+                return "抱歉，我现在无法处理您的请求，请稍后再试。(API调用失败)"
         except Exception as e:
             self.logger.error(f"生成响应时出错: {e}")
-            return "系统出现问题，请稍后再试。"
+            self.logger.exception("详细错误信息:")
+            # 记录更多上下文信息以便调试
+            self.logger.error(f"意图信息: {intent_result.get('intent', 'unknown')}, 置信度: {intent_result.get('confidence', 0)}")
+            self.logger.error(f"API客户端状态: 模型={self.api_client.model_id}, 超时={self.api_client.timeout}秒, 重试次数={self.api_client.max_retries}")
+            return "系统出现问题，请稍后再试。(内部错误)"
 
     def _build_messages(self, intent_result: Dict) -> List[Dict]:
         """构建API请求消息.

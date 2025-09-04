@@ -144,11 +144,14 @@ class ClarificationAgent:
             self.api_client.timeout = original_timeout
 
             if not resp.success:
-                logger.warning("Clarification LLM 失败: %s", resp.error_message)
+                logger.error("Clarification LLM 失败: %s", resp.error_message)
                 # 如果是服务器繁忙错误或超时错误，返回基于规则的候选
                 if any(keyword in resp.error_message.lower() for keyword in ["503", "busy", "timeout", "超时"]):
                     logger.info("检测到API超时或服务繁忙，使用降级策略")
-                    return self._generate_fallback_candidates(user_input, context, history)
+                    logger.info("降级原因: %s", resp.error_message)
+                    fallback_candidates = self._generate_fallback_candidates(user_input, context, history)
+                    logger.info("生成的降级候选: %s", fallback_candidates)
+                    return fallback_candidates
                 return []
 
             # 尝试解析 JSON 列表
@@ -170,7 +173,11 @@ class ClarificationAgent:
             if "original_timeout" in locals():
                 self.api_client.timeout = original_timeout
             logger.error("解析 Clarification LLM 输出失败: %s", exc)
-            return self._generate_fallback_candidates(user_input, context, history)
+            logger.exception("详细错误信息:")
+            logger.info("使用降级策略生成候选")
+            fallback_candidates = self._generate_fallback_candidates(user_input, context, history)
+            logger.info("生成的降级候选: %s", fallback_candidates)
+            return fallback_candidates
 
     def _parse_candidates_response(self, text: str) -> List[str]:
         """尝试多种方式解析LLM响应"""

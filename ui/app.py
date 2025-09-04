@@ -304,9 +304,17 @@ def process_user_input(user_input: str):
 
     # 处理输入并获取响应
     with st.spinner("正在处理..."):
-        start_time = time.time()
-        response, debug_info = engine.process_input(user_input)
-        processing_time = time.time() - start_time
+        try:
+            start_time = time.time()
+            response, debug_info = engine.process_input(user_input)
+            processing_time = time.time() - start_time
+        except Exception as e:
+            st.error(f"处理用户输入时发生错误: {str(e)}")
+            st.error("请检查API连接和配置，或尝试重新开始会话")
+            # 记录错误到日志
+            import traceback
+            st.code(traceback.format_exc(), language="python")
+            return
 
     # 显示系统响应
     with st.chat_message("assistant"):
@@ -440,9 +448,31 @@ def display_api_tab(tab, debug_info):
 
     api_calls = debug_info.get("api_calls", [])
     if api_calls:
+        # 显示API调用统计信息
+        total_calls = len(api_calls)
+        success_calls = sum(1 for call in api_calls if call.get("success", False))
+        failed_calls = total_calls - success_calls
+        avg_response_time = sum(call.get("response_time", 0) for call in api_calls) / total_calls if total_calls > 0 else 0
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("总调用次数", total_calls)
+        with col2:
+            st.metric("成功率", f"{(success_calls/total_calls*100):.1f}%" if total_calls > 0 else "N/A")
+        with col3:
+            st.metric("平均响应时间", f"{avg_response_time:.2f}s")
+            
+        # 如果有失败的调用，显示警告
+        if failed_calls > 0:
+            st.warning(f"⚠️ 有 {failed_calls} 次API调用失败，请展开查看详情")
+            
         for i, call in enumerate(api_calls):
-            with st.expander(f"API调用 {i+1} - 响应时间: {call.get('response_time', 0):.2f}s"):
-                req_tab, resp_tab, summary_tab = st.tabs(["请求", "响应", "摘要"])
+            # 根据成功状态设置不同的样式
+            is_success = call.get("success", False)
+            expander_label = f"API调用 {i+1} - {'✅ 成功' if is_success else '❌ 失败'} - 响应时间: {call.get('response_time', 0):.2f}s"
+            
+            with st.expander(expander_label):
+                req_tab, resp_tab, summary_tab, debug_tab = st.tabs(["请求", "响应", "摘要", "调试信息"])
 
                 with summary_tab:
                     st.json(
@@ -453,7 +483,22 @@ def display_api_tab(tab, debug_info):
                             "response_time": call.get("response_time", 0),
                         }
                     )
-
+                    
+                with debug_tab:
+                    # 显示更多调试信息
+                    if not is_success:
+                        st.error("错误详情")
+                        error_msg = call.get("error_message", call.get('error', "未知错误"))
+                        st.code(error_msg)
+                        
+                        # 提供可能的解决方案
+                        if "timeout" in error_msg.lower():
+                            st.info("💡 可能的解决方案: 增加超时时间或检查网络连接")
+                        elif "rate limit" in error_msg.lower():
+                            st.info("💡 可能的解决方案: 降低请求频率或等待一段时间后重试")
+                        elif "connection" in error_msg.lower():
+                            st.info("💡 可能的解决方案: 检查网络连接或API服务状态")
+                            
                 with req_tab:
                     request_data = call.get("request", {})
                     if request_data:

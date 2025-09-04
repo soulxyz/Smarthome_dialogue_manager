@@ -38,7 +38,7 @@ class SiliconFlowClient:
         """
         self.api_key = api_key
         self.base_url = base_url
-        self.model_id = "zai-org/GLM-4.5-Air"
+        self.model_id = "moonshotai/Kimi-K2-Instruct"#zai-org/GLM-4.5-Air
 
         self.session = requests.Session()
         self.session.headers.update(
@@ -237,7 +237,7 @@ class SiliconFlowClient:
 
             except requests.exceptions.Timeout:
                 error_msg = f"Request timeout after {self.timeout} seconds"
-                self.logger.warning(error_msg)
+                self.logger.error(f"API请求超时: {error_msg}，尝试次数: {attempt+1}/{self.max_retries+1}")
                 last_error = error_msg
 
                 if attempt < self.max_retries:
@@ -248,7 +248,7 @@ class SiliconFlowClient:
 
             except requests.exceptions.ConnectionError as e:
                 error_msg = f"Connection error: {self._sanitize_error_message(str(e))}"
-                self.logger.warning(error_msg)
+                self.logger.error(f"API连接错误: {error_msg}，尝试次数: {attempt+1}/{self.max_retries+1}")
                 last_error = error_msg
 
                 if attempt < self.max_retries:
@@ -259,7 +259,8 @@ class SiliconFlowClient:
 
             except Exception as e:
                 error_msg = f"Unexpected error: {e}"
-                self.logger.error(error_msg)
+                self.logger.error(f"API调用未预期错误: {error_msg}，尝试次数: {attempt+1}/{self.max_retries+1}")
+                self.logger.exception("详细错误信息:")
                 last_error = error_msg
                 break
 
@@ -299,7 +300,7 @@ class SiliconFlowClient:
         return {
             "model_id": self.model_id,
             "provider": "SiliconFlow",
-            "description": "GLM-4.5-Air model via SiliconFlow API",
+            "description": "moonshotai/Kimi-K2-Instruct model via SiliconFlow API",
             "max_tokens": 8192,
             "supports_streaming": True,
         }
