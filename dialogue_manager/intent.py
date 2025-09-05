@@ -82,6 +82,9 @@ class IntentRecognizer:
             r"(调节|设置|调到).*?(温度|亮度|音量|风速)",
             r"(增加|提高|调高).*?(温度|亮度|音量|风速)",
             r"(减少|降低|调低).*?(温度|亮度|音量|风速)",
+            # 增加音量相关的模式
+            r"(声音|音量).*?(大|小|高|低).*?(一点|一些|点)",
+            r"(大|小|高|低).*?(声音|音量)",
         ]
 
         # 基础查询状态关键词
@@ -89,6 +92,10 @@ class IntentRecognizer:
             r"(查看|查询|看看|检查).*?(状态|情况|温度|湿度)",
             r".*?(怎么样|如何|状态|情况)",
             r"(现在|当前).*?(温度|湿度|状态)",
+            # 状态查询特征词 - 优先级提升
+            r".*?(开着|亮着|运行着|工作着).*?(没|吗|不)",  # "空调开着没?"
+            r".*?(多少|几度|几点|什么时候)",  # "温度多少?"
+            r".*?(是否|有没有|能不能)",  # 状态确认类
             # 设备发现/能力查询类表达
             r"(有什么|有哪些).*?(设备|家电)",
             r"(设备|家电).*?(列表|有哪些|有什么)",
@@ -102,6 +109,13 @@ class IntentRecognizer:
             r"(启动|开启|切换到).*?(睡眠|观影|聚会|离家|回家).*?模式",
             r"(睡眠|观影|聚会|离家|回家).*?模式",
             r"我要(睡觉|看电影|开派对|出门|回家)",
+            # 增加更多场景表达
+            r"(看|观看|播放).*?(电影|片子|视频|电视剧)",  # "看个电影"
+            r"(听|播放).*?(音乐|歌曲|歌)",
+            r"(睡觉|休息|午休)",
+            r"(起床|醒来)",
+            r"(出门|外出|离开)",
+            r"(回来|到家|回家)",
         ]
 
         # 定时任务相关关键词
@@ -172,7 +186,15 @@ class IntentRecognizer:
                 else:
                     self.logger.warning("Focus entity found but has no value")
             elif pronoun_info["has_pronoun"]:
-                self.logger.warning("Pronoun detected but no current_focus in context")
+                # 如果没有明确的焦点，尝试从最近的设备实体中推断
+                last_entities = context.get("last_entities", {})
+                devices = last_entities.get("devices", [])
+                if devices:
+                    recent_device = devices[0]["value"]  # 使用最近的设备
+                    processed_input = processed_input.replace(pronoun_info["placeholder"], recent_device)
+                    self.logger.info(f"Pronoun replaced with recent device: {user_input} -> {processed_input}")
+                else:
+                    self.logger.warning("Pronoun detected but no current_focus or recent devices in context")
 
             # 意图分类
             intent_scores = self._classify_intent(processed_input)
@@ -288,20 +310,34 @@ class IntentRecognizer:
         # 设备控制意图（优先级最高）
         for pattern in self.device_control_patterns:
             if re.search(pattern, user_input):
-                scores[IntentType.DEVICE_CONTROL.value] += 0.8
-                # 如果包含设备名，额外加分
-                if has_device:
-                    scores[IntentType.DEVICE_CONTROL.value] += 0.3
+                # 检查是否是查询状态的表达，如果是则降低设备控制得分
+                if re.search(r".*?(开着|亮着|运行着|工作着).*?(没|吗|不)", user_input):
+                    scores[IntentType.DEVICE_CONTROL.value] += 0.4  # 大幅降低
+                else:
+                    scores[IntentType.DEVICE_CONTROL.value] += 0.8
+                    # 如果包含设备名，额外加分
+                    if has_device:
+                        scores[IntentType.DEVICE_CONTROL.value] += 0.3
 
-        # 查询状态意图
+        # 查询状态意图 - 提高权重以对抗设备控制
         for pattern in self.query_patterns:
             if re.search(pattern, user_input):
-                scores[IntentType.QUERY_STATUS.value] += 0.7
+                # 状态查询特征词给予更高权重
+                if re.search(r".*?(开着|亮着|运行着|工作着).*?(没|吗|不)", user_input) or \
+                   re.search(r".*?(多少|几度|几点|什么时候)", user_input):
+                    scores[IntentType.QUERY_STATUS.value] += 0.9  # 提高到0.9
+                else:
+                    scores[IntentType.QUERY_STATUS.value] += 0.7
 
-        # 场景控制意图
+        # 场景控制意图 - 提高权重以对抗设备控制
         for pattern in self.scene_patterns:
             if re.search(pattern, user_input):
-                scores[IntentType.SCENE_CONTROL.value] += 0.8
+                # 场景特征词给予更高权重
+                if re.search(r"(看|观看|播放).*?(电影|片子|视频|电视剧)", user_input) or \
+                   re.search(r"(听|播放).*?(音乐|歌曲|歌)", user_input):
+                    scores[IntentType.SCENE_CONTROL.value] += 0.95  # 提高到0.95
+                else:
+                    scores[IntentType.SCENE_CONTROL.value] += 0.8
 
         # 定时任务意图
         for pattern in self.schedule_patterns:

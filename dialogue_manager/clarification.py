@@ -28,13 +28,22 @@ class ClarificationAgent:
     DEFAULT_PROMPT_TEMPLATE = (
         "你是一个智能家居助手, 需要帮助解析用户的模糊指令。\n"
         '当前用户输入: "{user_input}"\n'
-        "历史对话上下文: {context_info}\n"
-        "请基于上下文信息，生成不超过 {max_candidates} 条可能的完整指令改写。\n"
+        "系统上下文信息:\n{context_info}\n"
+        "请基于系统的可用设备和上下文信息，生成不超过 {max_candidates} 条可能的完整指令改写。\n"
         "要求：\n"
-        "1. 优先考虑与历史对话的关联性\n"
-        "2. 如果上下文中有设备信息，优先补全相关设备操作\n"
-        "3. 返回JSON列表格式，每条指令不超过20个中文字符\n"
-        "4. 按照可能性从高到低排序"
+        "1. 优先使用系统中实际存在的设备和房间\n"
+        "2. 保持用户原始意图的核心含义，不要过度扩展\n"
+        "3. 区分不同类型的意图：\n"
+        "   - 设备控制：明确的开关、调节操作，如'打开客厅灯'、'调高空调温度'\n"
+        "   - 状态查询：询问当前状态，如'查看空调状态'、'客厅温度多少'\n"
+        "   - 场景控制：生活场景，如'启动观影模式'、'切换睡眠场景'\n"
+        "4. 特殊处理规则：\n"
+        "   - 用户问'...开着没?'、'...多少?'、'...怎么样?' → 生成查询类改写\n"
+        "   - 用户说'看电影'、'听音乐'、'睡觉' → 生成场景类改写\n"
+        "   - 模糊的设备引用 → 结合焦点设备和可用设备列表\n"
+        "5. 如果有当前焦点设备，优先考虑对该设备的操作\n"
+        "6. 返回JSON列表格式，每条指令不超过12个中文字符\n"
+        "7. 按照可能性从高到低排序"
     )
 
     def __init__(
@@ -318,7 +327,7 @@ Returns:
 
     def _build_context_info(self, context: Dict = None, history: List = None) -> str:
         """
-构建上下文信息字符串.
+构建上下文信息字符串，包含设备管理器的完整信息.
 
 Args:
     context (Dict, optional): 上下文字典.
@@ -329,8 +338,45 @@ Returns:
 """
         context_parts = []
 
-        # 从context中提取关键信息
+        # 1. 从设备管理器获取可用设备信息
+        if self.device_manager:
+            try:
+                # 获取所有可用设备
+                all_devices = self.device_manager.get_all_devices()
+                if all_devices:
+                    device_info = []
+                    for device in all_devices[:10]:  # 限制数量避免提示词过长
+                        name = device.get('name', device.get('full_name', ''))
+                        room = device.get('room', '')
+                        device_type = device.get('type', '')
+                        if name:
+                            device_info.append(f"{name}({device_type}@{room})")
+                    
+                    if device_info:
+                        context_parts.append(f"可用设备: {', '.join(device_info)}")
+
+                # 获取可用房间
+                rooms = self.device_manager.get_available_rooms()
+                if rooms:
+                    context_parts.append(f"房间: {', '.join(rooms[:5])}")  # 限制房间数量
+
+                # 获取设备类型
+                device_types = self.device_manager.get_available_device_types()
+                if device_types:
+                    context_parts.append(f"设备类型: {', '.join(device_types)}")
+
+            except Exception as e:
+                logger.warning(f"Failed to get device manager info: {e}")
+
+        # 2. 从context中提取关键信息
         if context:
+            # 当前焦点设备
+            current_focus = context.get("current_focus")
+            if current_focus:
+                focus_device = current_focus.get("value")
+                if focus_device:
+                    context_parts.append(f"当前焦点设备: {focus_device}")
+
             # 提取最近的设备实体
             last_entities = context.get("last_entities", {})
             if last_entities:
@@ -346,12 +392,17 @@ Returns:
                 if values:
                     context_parts.append(f"最近的参数: {', '.join(values)}")
 
+                # 位置信息
+                locations = [entity["value"] for entity in last_entities.get("locations", [])]
+                if locations:
+                    context_parts.append(f"最近的位置: {', '.join(locations)}")
+
             # 提取最近的意图
             last_intent = context.get("last_intent")
             if last_intent:
                 context_parts.append(f"上一轮意图: {last_intent}")
 
-        # 从history中提取最近的对话
+        # 3. 从history中提取最近的对话
         if history and len(history) > 0:
             recent_dialogues = []
             # 只取最近3轮对话
