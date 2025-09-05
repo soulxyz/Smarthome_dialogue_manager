@@ -113,13 +113,15 @@ class IntentRecognizer:
         # 问候相关关键词
         self.greeting_patterns = [r"^(你好|您好|hi|hello|嗨)", r"(早上好|下午好|晚上好|晚安)", r"(谢谢|感谢|再见|拜拜)"]
         
-        # 天气查询相关关键词
+        # 天气查询相关关键词（修复：避免与设备控制冲突）
         self.weather_patterns = [
-            r".*?(天气|气温|温度|下雨|晴天|阴天|雨天).*?",
-            r"(今天|明天|后天|昨天).*?(天气|气温|温度)",
-            r".*?(怎么样|如何).*?(天气|气温)",
-            r"(那|这).*?(明天|今天|后天|昨天).*?(呢|怎么样|如何)",
-            r"(明天|今天|后天|昨天).*?(呢|怎么样|如何)"
+            r"(今天|明天|后天|昨天).*?(天气|气温|温度).*?(怎么样|如何|呢)",
+            r"(查询|查看|看看).*?(天气|气温).*?(情况|状况)",
+            r".*?(天气|气温).*?(怎么样|如何|情况|状况)",
+            r"(外面|室外|户外).*(温度|天气|气温)",
+            r"(下雨|晴天|阴天|雨天|刮风|下雪)",
+            r"(那|这).*?(明天|今天|后天|昨天).*?(天气|气温).*?(呢|怎么样|如何)",
+            r"(明天|今天|后天|昨天).*?(下雨|晴天|阴天|雨天|刮风|下雪)"
         ]
 
         # 初始化设备和动作实体（从设备管理器动态获取）
@@ -273,11 +275,17 @@ class IntentRecognizer:
             Dict[str, float]: 意图分数
         """
         scores = {intent.value: 0.0 for intent in IntentType}
-
-        # 设备控制意图
+        
+        # 先检查是否包含设备实体
+        has_device = self._check_contains_device_or_room(user_input)
+        
+        # 设备控制意图（优先级最高）
         for pattern in self.device_control_patterns:
             if re.search(pattern, user_input):
                 scores[IntentType.DEVICE_CONTROL.value] += 0.8
+                # 如果包含设备名，额外加分
+                if has_device:
+                    scores[IntentType.DEVICE_CONTROL.value] += 0.3
 
         # 查询状态意图
         for pattern in self.query_patterns:
@@ -299,10 +307,14 @@ class IntentRecognizer:
             if re.search(pattern, user_input):
                 scores[IntentType.GREETING.value] += 0.9
                 
-        # 天气查询意图
+        # 天气查询意图（降低权重，避免与设备控制冲突）
         for pattern in self.weather_patterns:
             if re.search(pattern, user_input):
-                scores[IntentType.QUERY_WEATHER.value] += 0.8
+                # 如果包含设备相关词汇，则降低天气查询的权重
+                if has_device or any(word in user_input for word in ["空调", "风扇", "调节", "设置", "调到", "设为"]):
+                    scores[IntentType.QUERY_WEATHER.value] += 0.3  # 降低权重
+                else:
+                    scores[IntentType.QUERY_WEATHER.value] += 0.8
 
         # 使用会话级动态模式
         for intent_key, pattern_list in self.session_patterns.items():
@@ -313,8 +325,6 @@ class IntentRecognizer:
         
         # 如果只有设备名，没有其他意图匹配，则认为是设备控制意图
         if max(scores.values()) == 0.0:
-            # 动态检查是否包含设备名和房间名
-            has_device = self._check_contains_device_or_room(user_input)
             if has_device:
                 scores[IntentType.DEVICE_CONTROL.value] = 0.6
         
@@ -360,7 +370,7 @@ class IntentRecognizer:
         entities = []
         found_spans = []
 
-        # 1. 组合设备和动作实体关键词
+        # 1. 组合设备、动作和位置实体关键词
         all_keywords = {}
         for device_type, keywords in self.device_entities.items():
             for keyword in set(keywords):
@@ -369,6 +379,32 @@ class IntentRecognizer:
         for action_type, keywords in self.action_entities.items():
             for keyword in set(keywords):
                 all_keywords[keyword] = ("action", action_type, 0.8)
+                
+        # 添加位置/房间实体识别
+        location_keywords = {
+            "客厅": ("location", "客厅", 0.9),
+            "主卧": ("location", "主卧", 0.9), 
+            "次卧": ("location", "次卧", 0.9),
+            "卧室": ("location", "卧室", 0.8),
+            "房间": ("location", "房间", 0.7),
+            "厨房": ("location", "厨房", 0.9),
+            "餐厅": ("location", "餐厅", 0.9),
+            "书房": ("location", "书房", 0.9),
+            "阳台": ("location", "阳台", 0.9),
+        }
+        
+        # 从设备管理器获取动态房间信息
+        if self.device_manager:
+            try:
+                devices = self.device_manager.get_all_devices()
+                for device in devices:
+                    room = device.get('room', '')
+                    if room and room not in location_keywords:
+                        location_keywords[room] = ("location", room, 0.9)
+            except Exception as e:
+                self.logger.warning(f"Failed to get dynamic room info: {e}")
+        
+        all_keywords.update(location_keywords)
 
         # 按长度降序排序关键词，以优先匹配长实体
         sorted_keywords = sorted(all_keywords.keys(), key=len, reverse=True)

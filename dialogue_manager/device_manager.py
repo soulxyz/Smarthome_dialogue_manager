@@ -10,6 +10,9 @@ from typing import Any, Dict, Optional, Tuple, List, Callable
 from datetime import datetime
 from copy import deepcopy
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+import weakref
 
 
 # 基础设备抽象
@@ -19,23 +22,31 @@ class Device:
     name: str
     room: str
     state: Dict[str, Any] = field(default_factory=dict)
+    
+    def __post_init__(self):
+        """添加线程锁以确保设备状态修改的线程安全"""
+        self._lock = threading.RLock()
 
     def turn_on(self) -> Tuple[bool, str]:
-        self.state["on"] = True
-        return True, f"{self.room}{self.name}已开启"
+        with self._lock:
+            self.state["on"] = True
+            return True, f"{self.room}{self.name}已开启"
 
     def turn_off(self) -> Tuple[bool, str]:
-        self.state["on"] = False
-        return True, f"{self.room}{self.name}已关闭"
+        with self._lock:
+            self.state["on"] = False
+            return True, f"{self.room}{self.name}已关闭"
 
     def adjust(self, attribute: str, value: Any) -> Tuple[bool, str]:
-        # 缺省实现：直接写入
-        self.state[attribute] = value
-        return True, f"已将{self.room}{self.name}的{attribute}设置为{value}"
+        with self._lock:
+            # 缺省实现：直接写入
+            self.state[attribute] = value
+            return True, f"已将{self.room}{self.name}的{attribute}设置为{value}"
 
     def status_text(self) -> str:
-        on_text = "已开启" if self.state.get("on") else "已关闭"
-        return f"{self.room}{self.name}{on_text}"
+        with self._lock:
+            on_text = "已开启" if self.state.get("on") else "已关闭"
+            return f"{self.room}{self.name}{on_text}"
 
 
 # 具体设备
@@ -57,14 +68,15 @@ class LightDevice(Device):
         return False, None
 
     def adjust(self, attribute: str, value: Any) -> Tuple[bool, str]:
-        if attribute in ("亮度", "brightness"):
-            ok, v = self._parse_int_like(value, "亮度取值无效")
-            if not ok:
-                return False, "亮度取值无效"
-            v = max(0, min(100, int(v)))
-            self.state["brightness"] = v
-            return True, f"已将{self.room}{self.name}亮度设置为{v}%"
-        return super().adjust(attribute, value)
+        with self._lock:
+            if attribute in ("亮度", "brightness"):
+                ok, v = self._parse_int_like(value, "亮度取值无效")
+                if not ok:
+                    return False, "亮度取值无效"
+                v = max(0, min(100, int(v)))
+                self.state["brightness"] = v
+                return True, f"已将{self.room}{self.name}亮度设置为{v}%"
+            return super().adjust(attribute, value)
 
     def status_text(self) -> str:
         base = super().status_text()
@@ -89,24 +101,25 @@ class AirConditionerDevice(Device):
         return False, None
 
     def adjust(self, attribute: str, value: Any) -> Tuple[bool, str]:
-        if attribute in ("温度", "temperature"):
-            ok, v = self._parse_int_like(value)
-            if not ok:
-                return False, "温度取值无效"
-            v = max(16, min(30, int(v)))
-            self.state["temperature"] = v
-            return True, f"已将{self.room}{self.name}温度设置为{v}度"
-        if attribute in ("风速", "fan_speed"):
-            ok, v = self._parse_int_like(value)
-            if not ok:
-                return False, "风速取值无效"
-            v = max(1, min(5, int(v)))
-            self.state["fan_speed"] = v
-            return True, f"已将{self.room}{self.name}风速设置为{v}档"
-        if attribute in ("模式", "mode"):
-            self.state["mode"] = str(value)
-            return True, f"已将{self.room}{self.name}模式设置为{value}"
-        return super().adjust(attribute, value)
+        with self._lock:
+            if attribute in ("温度", "temperature"):
+                ok, v = self._parse_int_like(value)
+                if not ok:
+                    return False, "温度取值无效"
+                v = max(16, min(30, int(v)))
+                self.state["temperature"] = v
+                return True, f"已将{self.room}{self.name}温度设置为{v}度"
+            if attribute in ("风速", "fan_speed"):
+                ok, v = self._parse_int_like(value)
+                if not ok:
+                    return False, "风速取值无效"
+                v = max(1, min(5, int(v)))
+                self.state["fan_speed"] = v
+                return True, f"已将{self.room}{self.name}风速设置为{v}档"
+            if attribute in ("模式", "mode"):
+                self.state["mode"] = str(value)
+                return True, f"已将{self.room}{self.name}模式设置为{value}"
+            return super().adjust(attribute, value)
 
     def status_text(self) -> str:
         base = super().status_text()
@@ -134,21 +147,22 @@ class TVDevice(Device):
         return False, None
 
     def adjust(self, attribute: str, value: Any) -> Tuple[bool, str]:
-        if attribute in ("音量", "volume"):
-            ok, v = self._parse_int_like(value)
-            if not ok:
-                return False, "音量取值无效"
-            v = max(0, min(100, int(v)))
-            self.state["volume"] = v
-            return True, f"已将{self.room}{self.name}音量设置为{v}"
-        if attribute in ("频道", "channel"):
-            ok, v = self._parse_int_like(value)
-            if not ok:
-                return False, "频道取值无效"
-            v = max(1, int(v))
-            self.state["channel"] = v
-            return True, f"已将{self.room}{self.name}切换到第{v}频道"
-        return super().adjust(attribute, value)
+        with self._lock:
+            if attribute in ("音量", "volume"):
+                ok, v = self._parse_int_like(value)
+                if not ok:
+                    return False, "音量取值无效"
+                v = max(0, min(100, int(v)))
+                self.state["volume"] = v
+                return True, f"已将{self.room}{self.name}音量设置为{v}"
+            if attribute in ("频道", "channel"):
+                ok, v = self._parse_int_like(value)
+                if not ok:
+                    return False, "频道取值无效"
+                v = max(1, int(v))
+                self.state["channel"] = v
+                return True, f"已将{self.room}{self.name}切换到第{v}频道"
+            return super().adjust(attribute, value)
 
     def status_text(self) -> str:
         base = super().status_text()
@@ -173,14 +187,15 @@ class FanDevice(Device):
         return False, None
 
     def adjust(self, attribute: str, value: Any) -> Tuple[bool, str]:
-        if attribute in ("风速", "speed", "fan_speed"):
-            ok, v = self._parse_int_like(value)
-            if not ok:
-                return False, "风速取值无效"
-            v = max(1, min(5, int(v)))
-            self.state["speed"] = v
-            return True, f"已将{self.room}{self.name}风速设置为{v}档"
-        return super().adjust(attribute, value)
+        with self._lock:
+            if attribute in ("风速", "speed", "fan_speed"):
+                ok, v = self._parse_int_like(value)
+                if not ok:
+                    return False, "风速取值无效"
+                v = max(1, min(5, int(v)))
+                self.state["speed"] = v
+                return True, f"已将{self.room}{self.name}风速设置为{v}档"
+            return super().adjust(attribute, value)
 
     def status_text(self) -> str:
         base = super().status_text()
@@ -194,15 +209,20 @@ class DeviceManager:
         # 设备注册表：按类型与房间索引
         self.devices: List[Device] = []
         self._index: Dict[Tuple[str, str], List[Device]] = {}
-        # 线程安全锁
-        self._lock = threading.RLock()
+        # 细粒度锁：读写分离，减少锁竞争
+        self._read_lock = threading.RLock()
+        self._write_lock = threading.RLock()
         self._build_default_preset()
         # 版本与事件回调
         self._version: int = 0
         self._last_updated_at: Optional[str] = None
         self._callbacks: List[Callable[[Dict[str, Any]], None]] = []
-        # 最近一次快照（便于做默认对比）
-        self._last_snapshot: Dict[str, Any] = self.snapshot()
+        # 异步事件处理器
+        self._event_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="device_events")
+        # 快照缓存优化
+        self._snapshot_cache: Optional[Dict[str, Any]] = None
+        self._snapshot_cache_time: float = 0
+        self._snapshot_cache_ttl: float = 0.1  # 100ms缓存TTL
 
     # ---------- 预设 ----------
     def _build_default_preset(self):
@@ -250,6 +270,30 @@ class DeviceManager:
             except Exception:
                 # 单个回调出错不影响整体
                 continue
+    
+    def _emit_event_async(self, event_type: str, payload: Dict[str, Any]) -> None:
+        """异步触发事件，不阻塞主流程"""
+        event = {
+            "event": event_type,
+            "version": self._version,
+            "timestamp": self._last_updated_at,
+            **payload,
+        }
+        # 使用线程池异步执行回调
+        def execute_callbacks():
+            for cb in list(self._callbacks):
+                try:
+                    cb(event)
+                except Exception:
+                    # 单个回调出错不影响整体
+                    continue
+        
+        self._event_executor.submit(execute_callbacks)
+    
+    def _invalidate_snapshot_cache(self) -> None:
+        """使快照缓存失效"""
+        self._snapshot_cache = None
+        self._snapshot_cache_time = 0
 
     def get_version(self) -> int:
         return self._version
@@ -259,7 +303,7 @@ class DeviceManager:
 
     # ---------- 查询与执行 ----------
     def find_device(self, device_type: str, room: Optional[str]) -> Optional[Device]:
-        with self._lock:  # 线程安全保护
+        with self._read_lock:  # 使用读锁，允许并发读取
             if room:
                 # 精确匹配房间；若未找到则不回退
                 devs = self._index.get((device_type, room))
@@ -283,16 +327,23 @@ class DeviceManager:
         attribute: Optional[str] = None,
         number_value: Optional[int] = None,
     ) -> Dict[str, Any]:
-        with self._lock:  # 线程安全保护
-            if not device_type:
-                return {"success": False, "message": "未指定设备类型"}
-            device = self.find_device(device_type, room)
-            if not device:
-                return {"success": False, "message": f"未找到{room or ''}的{device_type}"}
+        # 参数验证（无需锁）
+        if not device_type:
+            return {"success": False, "message": "未指定设备类型"}
+        
+        # 查找设备（使用读锁）
+        device = self.find_device(device_type, room)
+        if not device:
+            return {"success": False, "message": f"未找到{room or ''}的{device_type}"}
 
-            action = self._normalize_action(action_keyword)
-            # 记录前快照（仅针对该设备）
-            before_state = deepcopy(device.state)
+        action = self._normalize_action(action_keyword)
+        
+        # 状态操作（写锁，范围最小化）
+        with self._write_lock:
+            # 快速记录前状态
+            before_state = device.state.copy()  # 使用浅拷贝替代深拷贝
+            
+            # 执行设备操作
             if action == "turn_on":
                 ok, msg = device.turn_on()
             elif action == "turn_off":
@@ -318,11 +369,14 @@ class DeviceManager:
             else:
                 ok, msg = False, "暂不支持的操作"
 
-            # 若状态变更成功：更新版本、触发事件并刷新最近快照
+            # 操作成功则更新版本，使快照缓存失效
             if ok:
                 self._bump_version()
-                after_state = deepcopy(device.state)
-                self._emit_event(
+                self._invalidate_snapshot_cache()
+                after_state = device.state.copy()  # 使用浅拷贝
+                
+                # 异步触发事件，不阻塞主流程
+                self._emit_event_async(
                     "state_changed",
                     {
                         "device": {
@@ -337,8 +391,6 @@ class DeviceManager:
                         "message": msg,
                     },
                 )
-                # 更新全局最近快照
-                self._last_snapshot = self.snapshot()
 
             return {
                 "success": ok,
@@ -349,7 +401,7 @@ class DeviceManager:
             }
 
     def query_status(self, device_type: Optional[str] = None, room: Optional[str] = None) -> Dict[str, Any]:
-        with self._lock:  # 线程安全保护
+        with self._read_lock:  # 使用读锁，允许并发读取
             targets: List[Device]
             if device_type:
                 if room:
@@ -372,11 +424,24 @@ class DeviceManager:
             return {"success": True, "message": "；".join(lines), "states": [d.state.copy() for d in targets]}
 
     def snapshot(self) -> Dict[str, Any]:
-        with self._lock:  # 线程安全保护
-            return {
+        # 检查缓存是否有效
+        current_time = time.time()
+        if (self._snapshot_cache is not None and 
+            current_time - self._snapshot_cache_time < self._snapshot_cache_ttl):
+            return self._snapshot_cache.copy()
+        
+        # 生成新快照
+        with self._read_lock:  # 使用读锁，允许并发读取
+            snapshot_data = {
                 f"{d.room}-{d.device_type}": {"on": d.state.get("on"), **{k: v for k, v in d.state.items() if k != "on"}}
                 for d in self.devices
             }
+            
+            # 更新缓存
+            self._snapshot_cache = snapshot_data.copy()
+            self._snapshot_cache_time = current_time
+            
+            return snapshot_data
 
     def snapshot_with_meta(self) -> Dict[str, Any]:
         """返回带元信息的快照，不破坏 snapshot() 兼容性"""
@@ -530,3 +595,8 @@ class DeviceManager:
             }
             for device in self.devices
         ]
+    
+    def cleanup(self):
+        """清理资源"""
+        if hasattr(self, '_event_executor') and self._event_executor:
+            self._event_executor.shutdown(wait=True)

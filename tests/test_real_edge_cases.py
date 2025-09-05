@@ -693,12 +693,16 @@ class TestConcurrencyAndThreadSafety:
         def device_operations(thread_id):
             """在单个线程中执行设备操作"""
             results = []
-            devices = ["灯", "空调", "电视", "风扇"]
-            rooms = ["客厅", "主卧", "次卧"]
+            # 修复：使用实际存在的设备-房间组合
+            valid_combinations = [
+                ("灯", "客厅"), ("灯", "主卧"), ("灯", "次卧"),
+                ("空调", "客厅"), ("空调", "主卧"),
+                ("电视", "客厅"),
+                ("风扇", "客厅"), ("风扇", "次卧")
+            ]
             
             for i in range(50):
-                device = devices[i % len(devices)]
-                room = rooms[i % len(rooms)]
+                device, room = valid_combinations[i % len(valid_combinations)]
                 action = "打开" if i % 2 == 0 else "关闭"
                 
                 try:

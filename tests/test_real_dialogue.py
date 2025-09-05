@@ -215,7 +215,7 @@ class TestDialogueEngineInternalLogic:
 
     def test_memory_cleanup_stress(self, memory_manager):
         """压力测试：内存清理"""
-        config = EngineConfig(enable_device_manager=True, cleanup_after_tests=True)
+        config = EngineConfig(enable_device_manager=True)
         engines = []
         
         # 创建大量引擎实例

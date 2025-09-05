@@ -64,11 +64,23 @@ class ConnectionPool:
         self.pool = Queue(maxsize=max_connections)
         self.lock = threading.Lock()
         self.created_connections = 0
-
-        # 预创建一些连接
-        for _ in range(min(3, max_connections)):
-            conn = self._create_connection()
-            self.pool.put(conn)
+        
+        # 对于内存数据库，我们需要特殊处理
+        self.is_memory_db = (db_path == ":memory:")
+        self._memory_db_conn = None
+        
+        if self.is_memory_db:
+            # 内存数据库：创建一个共享连接
+            self._memory_db_conn = sqlite3.connect(":memory:", check_same_thread=False)
+            self._memory_db_conn.execute("PRAGMA journal_mode=WAL")
+            self._memory_db_conn.execute("PRAGMA synchronous=NORMAL")
+            self._memory_db_conn.execute("PRAGMA cache_size=10000")
+            self._memory_db_conn.execute("PRAGMA temp_store=MEMORY")
+        else:
+            # 文件数据库：预创建一些连接
+            for _ in range(min(3, max_connections)):
+                conn = self._create_connection()
+                self.pool.put(conn)
 
     def _create_connection(self) -> sqlite3.Connection:
         """创建新的数据库连接"""
@@ -84,46 +96,63 @@ class ConnectionPool:
     @contextmanager
     def get_connection(self):
         """获取数据库连接的上下文管理器"""
-        conn = None
-        try:
-            # 尝试从池中获取连接
+        if self.is_memory_db:
+            # 内存数据库：直接返回共享连接
             try:
-                conn = self.pool.get_nowait()
-            except Empty:
-                # 池中没有可用连接，创建新连接
-                with self.lock:
-                    if self.created_connections < self.max_connections:
-                        conn = self._create_connection()
-                    else:
-                        # 等待可用连接（增加超时时间）
-                        conn = self.pool.get(timeout=30)  # 增加到30秒
-
-            yield conn
-
-        except Exception as e:
-            if conn:
-                conn.rollback()
-            raise e
-        finally:
-            if conn:
+                yield self._memory_db_conn
+            except Exception as e:
+                if self._memory_db_conn:
+                    self._memory_db_conn.rollback()
+                raise e
+        else:
+            # 文件数据库：使用连接池
+            conn = None
+            try:
+                # 尝试从池中获取连接
                 try:
-                    # 将连接放回池中
-                    self.pool.put_nowait(conn)
-                except Exception:
-                    # 池已满，关闭连接
-                    conn.close()
+                    conn = self.pool.get_nowait()
+                except Empty:
+                    # 池中没有可用连接，创建新连接
                     with self.lock:
-                        self.created_connections -= 1
+                        if self.created_connections < self.max_connections:
+                            conn = self._create_connection()
+                        else:
+                            # 等待可用连接（增加超时时间）
+                            conn = self.pool.get(timeout=30)  # 增加到30秒
+
+                yield conn
+
+            except Exception as e:
+                if conn:
+                    conn.rollback()
+                raise e
+            finally:
+                if conn:
+                    try:
+                        # 将连接放回池中
+                        self.pool.put_nowait(conn)
+                    except Exception:
+                        # 池已满，关闭连接
+                        conn.close()
+                        with self.lock:
+                            self.created_connections -= 1
 
     def close_all(self):
         """关闭所有连接"""
-        while not self.pool.empty():
-            try:
-                conn = self.pool.get_nowait()
-                conn.close()
-            except Empty:
-                break
-        self.created_connections = 0
+        if self.is_memory_db:
+            # 关闭内存数据库连接
+            if self._memory_db_conn:
+                self._memory_db_conn.close()
+                self._memory_db_conn = None
+        else:
+            # 关闭文件数据库连接池中的所有连接
+            while not self.pool.empty():
+                try:
+                    conn = self.pool.get_nowait()
+                    conn.close()
+                except Empty:
+                    break
+            self.created_connections = 0
 
 
 class MemoryManager:
@@ -136,13 +165,14 @@ class MemoryManager:
             db_path: 数据库文件路径
             max_connections: 最大连接数
         """
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.db_path = Path(db_path) if db_path != ":memory:" else db_path
+        if db_path != ":memory:":
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
         self.logger = logging.getLogger(__name__)
         # 会话级 PatternCache：{session_id: {intent: set(patterns)}}
         self.session_patterns: Dict[str, Dict[str, set]] = {}
-        self.pool = ConnectionPool(str(self.db_path), max_connections)
+        self.pool = ConnectionPool(db_path if db_path == ":memory:" else str(self.db_path), max_connections)
         self._init_database()
 
     def _init_database(self):
