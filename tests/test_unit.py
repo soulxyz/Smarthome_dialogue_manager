@@ -955,10 +955,18 @@ def test_memory_manager_get_user_sessions(temp_db_path):
 
     # 创建多个会话
     for i in range(3):
+        # 真实对话样例
+        realistic_samples = [
+            ("打开客厅灯", "客厅灯已打开"),
+            ("关闭空调", "空调已关闭"),
+            ("查询状态", "设备运行正常"),
+            ("调节温度", "温度已调节")
+        ]
+        user_input, system_response = realistic_samples[i % len(realistic_samples)]
         dialogue_history = [
             {
-                "user_input": f"测试输入{i}",
-                "system_response": f"测试响应{i}",
+                "user_input": user_input,
+                "system_response": system_response,
                 "intent_result": {"intent": "test", "confidence": 0.8},
                 "timestamp": time.time() + i * 100
             }

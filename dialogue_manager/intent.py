@@ -33,6 +33,7 @@ class Entity:
     confidence: float  # 置信度
     start_pos: int = -1  # 开始位置
     end_pos: int = -1  # 结束位置
+    source: str = "direct"  # 实体来源："direct"(直接提取), "context"(上下文推断), "history"(历史继承), "focus"(焦点实体)
 
 
 @dataclass
@@ -205,7 +206,8 @@ class IntentRecognizer:
                     "entity_type": entity.entity_type,
                     "confidence": entity.confidence,
                     "start_pos": entity.start_pos,
-                    "end_pos": entity.end_pos
+                    "end_pos": entity.end_pos,
+                    "source": entity.source  # 包含实体来源信息
                 }
                 entity_dicts.append(entity_dict)
                 
@@ -434,6 +436,7 @@ class IntentRecognizer:
                         confidence=confidence,
                         start_pos=start,
                         end_pos=end,
+                        source="direct"  # 直接从文本中提取
                     )
                     entities.append(entity)
                     found_spans.append((start, end))
@@ -450,16 +453,17 @@ class IntentRecognizer:
                     break
 
             if not is_overlapping:
-                entity = Entity(
-                    name=match.group(0),
-                    value=match.group(1),
-                    entity_type="number",
-                    confidence=0.9,
-                    start_pos=start,
-                    end_pos=end,
-                )
-                entities.append(entity)
-                found_spans.append((start, end))
+                            entity = Entity(
+                name=match.group(0),
+                value=match.group(1),
+                entity_type="number",
+                confidence=round(0.9, 3),
+                start_pos=start,
+                end_pos=end,
+                source="direct"  # 直接从文本中提取
+            )
+            entities.append(entity)
+            found_spans.append((start, end))
         
         # 然后匹配上下文相关的裸数字（在设备控制语境下）
         if not any(e.entity_type == "number" for e in entities):  # 只有没找到带单位的数字时才匹配裸数字
@@ -479,9 +483,10 @@ class IntentRecognizer:
                         name=match.group(1),
                         value=match.group(1),
                         entity_type="number",
-                        confidence=0.8,  # 稍低的置信度，因为是上下文推断
+                        confidence=round(0.8, 3),  # 稍低的置信度，因为是上下文推断
                         start_pos=number_start,
                         end_pos=number_end,
+                        source="context"  # 上下文推断的数字
                     )
                     entities.append(entity)
                     found_spans.append((number_start, number_end))
@@ -516,9 +521,10 @@ class IntentRecognizer:
                                 name=location,
                                 value=location,
                                 entity_type="location",
-                                confidence=0.95,  # 提高置信度
+                                confidence=round(0.95, 3),  # 提高置信度
                                 start_pos=start,
                                 end_pos=end,
+                                source="direct"  # 直接从文本中提取
                             )
                             entities.append(entity)
                             found_spans.append((start, end))
@@ -625,9 +631,10 @@ class IntentRecognizer:
                     name=device_type,
                     value=device_type,
                     entity_type="device",
-                    confidence=0.7,  # 降低置信度，因为是推断的
+                    confidence=round(0.7, 3),  # 降低置信度，因为是推断的，修复精度问题
                     start_pos=-1,  # 标记为隐含实体
                     end_pos=-1,
+                    source="context"  # 通过属性推断的设备
                 )
                 entities.append(entity)
                 self.logger.debug(f"Added implicit device entity '{device_type}' based on attribute '{attribute}'")
@@ -755,9 +762,10 @@ class IntentRecognizer:
                         name=focus_entity,
                         value=focus_entity,
                         entity_type="device",
-                        confidence=0.8,  # 来自上下文的置信度稍低
+                        confidence=round(0.8, 3),  # 来自上下文的置信度稍低
                         start_pos=-1,
-                        end_pos=-1
+                        end_pos=-1,
+                        source="focus"  # 焦点实体
                     )
                     entities.append(focus_device_entity)
                     self.logger.info(f"Added focus entity '{focus_entity}' for omitted subject")
@@ -810,9 +818,10 @@ class IntentRecognizer:
                             name=focus_entity.get("value"),
                             value=focus_entity.get("value"),
                             entity_type="device",
-                            confidence=0.85,
+                            confidence=round(0.85, 3),
                             start_pos=-1,
                             end_pos=-1,
+                            source="focus"  # 焦点实体
                         )
                     )
         
@@ -839,9 +848,10 @@ class IntentRecognizer:
                                              name=entity_value,
                                              value=entity_value,
                                              entity_type=entity_type,
-                                             confidence=0.8,
+                                             confidence=round(0.8, 3),
                                              start_pos=-1,
                                              end_pos=-1,
+                                             source="history"  # 从历史记录继承
                                          )
                                      )
 
@@ -860,9 +870,10 @@ class IntentRecognizer:
                             name=entity.get("value"),
                             value=entity.get("value"),
                             entity_type="location",
-                            confidence=0.7,  # 继承的位置信息置信度可以稍低
+                            confidence=round(0.7, 3),  # 继承的位置信息置信度可以稍低
                             start_pos=-1,
                             end_pos=-1,
+                            source="history"  # 继承的位置实体
                         )
                     )
                     break  # 只继承最近的一个位置
@@ -871,11 +882,14 @@ class IntentRecognizer:
     def _select_best_intent(self, intent_scores: Dict[str, float]) -> Tuple[str, float]:
         """选择最佳意图"""
         if not intent_scores or max(intent_scores.values()) == 0:
-            self._last_confidence = 0.0
+            self._last_confidence = round(0.0, 3)
             return IntentType.UNKNOWN.value, 0.0
 
         best_intent = max(intent_scores, key=intent_scores.get)
         confidence = min(intent_scores[best_intent], 1.0)  # 确保置信度不超过1.0
+        
+        # 修复浮点数精度问题：保留3位小数
+        confidence = round(confidence, 3)
         
         # 存储最后的置信度，供其他方法使用
         self._last_confidence = confidence

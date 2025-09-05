@@ -198,10 +198,17 @@ class TestInputValidationAndSanitization:
         start_time = time.time()
         malformed_results = []
         
+        # 使用真实但边界的用户输入进行测试
+        edge_case_inputs = [
+            "打开", "关闭", "调节", "设置温度", "开灯", "关掉", 
+            "查询状态", "帮我", "可以吗", "怎么办", "在吗", "谢谢"
+        ]
+        
         for i, (context, history) in enumerate(zip(malformed_contexts, malformed_histories)):
             try:
+                test_input = edge_case_inputs[i % len(edge_case_inputs)]
                 result = intent_recognizer.recognize(
-                    f"测试输入{i}", 
+                    test_input, 
                     context=context, 
                     history=history
                 )

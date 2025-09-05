@@ -543,9 +543,15 @@ class TestPerformanceReal:
         
         dialogue_engine.start_session("memory_test_user")
         
-        # 执行大量对话
+        # 执行大量真实对话场景来测试内存使用
+        realistic_inputs = [
+            "打开客厅的灯", "关闭空调", "调节温度到22度", "打开电视", 
+            "关掉风扇", "设置灯光亮度", "查询空调状态", "调高音量",
+            "切换频道", "设置定时器", "调低温度", "打开台灯"
+        ]
         for i in range(100):
-            dialogue_engine.process_input(f"测试输入{i}")
+            input_text = realistic_inputs[i % len(realistic_inputs)]
+            dialogue_engine.process_input(input_text)
         
         final_memory = process.memory_info().rss / 1024 / 1024  # MB
         memory_increase = final_memory - initial_memory

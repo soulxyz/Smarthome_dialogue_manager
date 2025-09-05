@@ -183,10 +183,19 @@ class TestDialogueEngineInternalLogic:
                 })
                 
                 from dialogue_manager.engine import DialogueTurn
+                # 使用真实的对话样例
+                realistic_pairs = [
+                    ("打开客厅的灯", "好的，客厅灯已打开"),
+                    ("关闭空调", "空调已关闭"),
+                    ("调节温度", "请问您要调到多少度？"),
+                    ("查询状态", "当前所有设备运行正常"),
+                    ("打开电视", "电视已打开，正在播放新闻频道")
+                ]
+                user_input, system_response = realistic_pairs[i % len(realistic_pairs)]
                 turn = DialogueTurn(
                     turn_id=i + 1,
-                    user_input=f"测试输入{i}",
-                    system_response=f"测试响应{i}",
+                    user_input=user_input,
+                    system_response=system_response,
                     intent="device_control"
                 )
                 engine.dialogue_history.append(turn)

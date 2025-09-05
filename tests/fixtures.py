@@ -240,17 +240,34 @@ def performance_test_data():
             "查询风扇状态",
             "设置空调温度"
         ] * 10,  # 50个并发请求
-        "large_dialogue_history": [
-            {
-                "user_input": f"测试输入{i}",
-                "system_response": f"测试响应{i}",
-                "intent": "device_control" if i % 2 == 0 else "query_status",
-                "confidence": 0.8 + (i % 3) * 0.1,
-                "timestamp": 1000000 + i * 60
-            }
-            for i in range(100)
-        ]
+        "large_dialogue_history": []
     }
+    
+    # 生成更真实的大量对话历史
+    realistic_conversations = [
+        ("打开客厅的灯", "好的，已经为您打开客厅的灯", "device_control"),
+        ("调节空调到22度", "已将空调温度设置为22度", "device_control"), 
+        ("关闭电视", "电视已关闭", "device_control"),
+        ("查询空调状态", "空调当前温度是24度，制冷模式", "query_status"),
+        ("打开风扇", "风扇已打开，设置为中档", "device_control"),
+        ("调高音量", "音量已调高", "device_control"),
+        ("关掉台灯", "台灯已关闭", "device_control"),
+        ("设置定时器", "请告诉我需要设置多长时间", "schedule_task"),
+        ("查询今天天气", "今天多云，温度25-30度", "query_weather"),
+        ("你好", "您好！有什么可以帮助您的吗？", "greeting")
+    ]
+    
+    for i in range(100):
+        user_input, system_response, intent = realistic_conversations[i % len(realistic_conversations)]
+        fixture_data["large_dialogue_history"].append({
+            "user_input": user_input,
+            "system_response": system_response, 
+            "intent": intent,
+            "confidence": 0.8 + (i % 3) * 0.1,
+            "timestamp": 1000000 + i * 60
+        })
+    
+    return fixture_data
 
 
 class APICallTracker:
@@ -349,12 +366,23 @@ def create_test_dialogue_history(count=10):
     history = []
     base_time = time.time()
     
+    # 真实的对话样例
+    realistic_examples = [
+        ("打开灯", "灯已打开", "device_control"),
+        ("关闭空调", "空调已关闭", "device_control"),
+        ("查询温度", "当前温度26度", "query_status"),
+        ("调节亮度", "亮度已调节", "device_control"),
+        ("你好", "您好！", "greeting"),
+        ("设置定时", "定时已设置", "schedule_task")
+    ]
+    
     for i in range(count):
+        user_input, system_response, intent = realistic_examples[i % len(realistic_examples)]
         turn = {
             "turn_id": i + 1,
-            "user_input": f"测试输入{i + 1}",
-            "system_response": f"测试响应{i + 1}",
-            "intent": "device_control" if i % 2 == 0 else "query_status",
+            "user_input": user_input,
+            "system_response": system_response,
+            "intent": intent,
             "confidence": 0.7 + (i % 4) * 0.1,
             "timestamp": base_time + i * 60,
             "context": {"test": True}
