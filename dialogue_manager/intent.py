@@ -416,7 +416,7 @@ class IntentRecognizer:
         all_keywords = {}
         for device_type, keywords in self.device_entities.items():
             for keyword in set(keywords):
-                all_keywords[keyword] = ("device", device_type, 0.9)
+                all_keywords[keyword] = ("device", keyword, 0.9)  # 使用关键词本身作为值
 
         for action_type, keywords in self.action_entities.items():
             for keyword in set(keywords):
@@ -476,6 +476,39 @@ class IntentRecognizer:
                     )
                     entities.append(entity)
                     found_spans.append((start, end))
+                    
+                    # 如果是设备实体，检查是否包含位置信息
+                    if entity_type == "device":
+                        location_keywords = self._get_location_keywords()
+                        for location in location_keywords:
+                            if keyword.startswith(location) and len(keyword) > len(location):
+                                # 这是一个复合设备名称，提取位置信息
+                                # 检查位置是否已经被其他实体覆盖
+                                # 注意：位置实体可以与当前设备实体重叠（因为它是设备名称的一部分）
+                                location_start = start
+                                location_end = start + len(location)
+                                location_overlapping = False
+                                for found_start, found_end in found_spans:
+                                    # 跳过与当前设备实体的重叠检查
+                                    if found_start == start and found_end == end:
+                                        continue
+                                    if location_start < found_end and location_end > found_start:
+                                        location_overlapping = True
+                                        break
+                                
+                                if not location_overlapping:
+                                    location_entity = Entity(
+                                        name=location,
+                                        value=location,
+                                        entity_type="location",
+                                        confidence=round(0.9, 3),
+                                        start_pos=location_start,
+                                        end_pos=location_end,
+                                        source="composite"  # 从复合设备名称中提取
+                                    )
+                                    entities.append(location_entity)
+                                    found_spans.append((location_start, location_end))
+                                break
 
         # 3. 抽取数值实体 - 增强版：支持更多场景
         # 优先匹配带单位的数字
@@ -642,6 +675,11 @@ class IntentRecognizer:
     
     def _add_implicit_device_entities(self, user_input: str, entities: List[Entity]) -> None:
         """根据属性关键词推断对应的设备类型"""
+        # 检查是否启用上下文实体填充
+        enable_context_fill = getattr(self.config, "enable_context_entity_fill", True)
+        if not enable_context_fill:
+            return  # 禁用上下文填充时，不进行隐式设备推断
+        
         # 检查是否已经有设备实体
         has_device = any(e.entity_type == "device" for e in entities)
         if has_device:
@@ -843,23 +881,7 @@ class IntentRecognizer:
         # 即使context为空，我们仍然需要处理历史记录
 
         # 继承设备 - 只有在启用上下文填充且焦点实体未过期的情况下才补充
-        if enable_context_fill:
-            has_device = any(e.entity_type == "device" for e in entities)
-            if intent == "device_control" and not has_device and "current_focus" in context:
-                focus_entity = context.get("current_focus")
-                # 确保焦点实体未过期
-                if focus_entity and focus_entity.get("turn_count", 0) < self.config.focus_entity_turn_decay:
-                    entities.append(
-                        Entity(
-                            name=focus_entity.get("value"),
-                            value=focus_entity.get("value"),
-                            entity_type="device",
-                            confidence=round(0.85, 3),
-                            start_pos=-1,
-                            end_pos=-1,
-                            source="focus"  # 焦点实体
-                        )
-                    )
+        # 注意：这里不再重复添加焦点实体，因为上层方法已经处理了焦点实体填充
         
         # 从历史记录中继承实体（如位置信息）
         if history and len(history) > 0:

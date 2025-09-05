@@ -101,6 +101,7 @@ class ConfigManager:
         key_files = [
             ".env",
             "tests/.env",
+            "tests/config/.env",  # 添加测试配置目录
             "tests/.api_key",
             "config/api_key.txt",
             "tests/config/api_key.txt"
@@ -162,5 +163,5 @@ def setup_api_key(api_key: str):
 # 预设置用户提供的API密钥
 if __name__ == "__main__":
     # 创建配置目录和API密钥文件
-    setup_api_key("sk-jonstefknohgowzhszdicmubuxejjuumgopkuanqdpqtbtyg")
-    print("API密钥配置完成！")
+    # setup_api_key("sk-wkp")
+    print(get_test_config())
