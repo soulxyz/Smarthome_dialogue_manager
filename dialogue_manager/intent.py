@@ -217,7 +217,9 @@ class IntentRecognizer:
                 "original_text": user_input,
             }
 
-            self.logger.info(f"Intent recognition result: {result}")
+            # 记录日志时压缩长文本
+            log_result = self._compress_result_for_logging(result)
+            self.logger.info(f"Intent recognition result: {log_result}")
             return result
 
         except Exception as e:
@@ -838,3 +840,38 @@ class IntentRecognizer:
         """
         # TODO: 实现统计信息收集
         return {"total_recognitions": 0, "clarification_rate": 0.0, "intent_distribution": {}}
+    
+    def _compress_result_for_logging(self, result: Dict) -> Dict:
+        """压缩结果中的长文本用于日志记录
+        
+        Args:
+            result: 原始结果字典
+            
+        Returns:
+            Dict: 压缩后的结果字典副本
+        """
+        import copy
+        log_result = copy.deepcopy(result)
+        
+        # 压缩original_text字段
+        if 'original_text' in log_result and log_result['original_text']:
+            original_text = log_result['original_text']
+            if len(original_text) > 100:
+                import re
+                # 检测重复字符序列
+                def compress_repetitions(match):
+                    char = match.group(1)
+                    count = len(match.group(0))
+                    if count > 10:
+                        return f"{char}...{char}(x{count})"
+                    return match.group(0)
+                
+                compressed = re.sub(r'(.)\1{9,}', compress_repetitions, original_text)
+                
+                # 如果仍然过长，截断
+                if len(compressed) > 100:
+                    compressed = original_text[:30] + f"...(省略{len(original_text)-60}字符)..." + original_text[-30:]
+                
+                log_result['original_text'] = compressed
+        
+        return log_result

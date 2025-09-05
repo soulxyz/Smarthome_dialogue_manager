@@ -625,7 +625,7 @@ class DialogueLogger:
         return self.performance_stats.copy()
     
     def _sanitize_text(self, text: str) -> str:
-        """脱敏处理文本，移除敏感信息
+        """脱敏处理文本，移除敏感信息并压缩长文本
         
         Args:
             text: 原始文本
@@ -636,8 +636,10 @@ class DialogueLogger:
         if not text:
             return text
         
-        # 这里可以添加更复杂的脱敏逻辑
-        # 例如：移除手机号、身份证号等敏感信息
+        # 先进行长文本压缩
+        text = self._compress_long_text(text)
+        
+        # 脱敏处理
         import re
         
         # 手机号脱敏 (保留前3位和后4位)
@@ -647,6 +649,43 @@ class DialogueLogger:
         text = re.sub(r'(\d{6})\d{8}(\d{4})', r'\1********\2', text)
         
         return text
+    
+    def _compress_long_text(self, text: str, max_length: int = 200) -> str:
+        """压缩过长的文本，特别是重复字符
+        
+        Args:
+            text: 原始文本
+            max_length: 最大显示长度
+            
+        Returns:
+            str: 压缩后的文本
+        """
+        if not text or len(text) <= max_length:
+            return text
+        
+        # 快速检测：如果是简单重复字符，直接处理
+        if len(set(text)) == 1:  # 全是同一个字符
+            char = text[0]
+            return f"{char}...(重复{len(text)}次)...{char}"
+        
+        # 快速检测：如果前100个字符都一样，可能是重复字符串
+        if len(text) > 100:
+            sample = text[:100]
+            if len(set(sample)) <= 2:  # 最多2种不同字符
+                import re
+                # 使用更高效的正则匹配
+                pattern = r'(.{1,10})\1{5,}'  # 匹配重复的短模式
+                match = re.search(pattern, text[:200])  # 只检查前200个字符
+                if match:
+                    pattern_text = match.group(1)
+                    total_matches = len(text) // len(pattern_text)
+                    return f"{pattern_text}...(模式重复约{total_matches}次)"
+        
+        # 如果文本过长，直接截断
+        prefix_len = max_length // 3
+        suffix_len = max_length // 3
+        middle_info = f"...(省略{len(text) - prefix_len - suffix_len}字符)..."
+        return text[:prefix_len] + middle_info + text[-suffix_len:]
 
 
 # 全局日志器实例
