@@ -117,9 +117,33 @@ class DialogueEngine:
         self.session_id = None
         self.dialogue_history: List[DialogueTurn] = []
         self.context = {}
+        
+        # 焦点管理性能优化：减少日志频率
+        self._focus_log_throttle = {}
+        self._focus_log_interval = 1.0  # 1秒内最多记录一次相同焦点的日志
 
         self.logger = logging.getLogger(__name__)
         self.dialogue_logger = get_dialogue_logger()
+
+    def _log_focus_update_throttled(self, focus_value: str, turn_count: int):
+        """节流的焦点更新日志记录，避免频繁日志影响性能"""
+        current_time = time.time()
+        log_key = f"{focus_value}_{turn_count}"
+        
+        # 检查是否需要记录日志
+        if (log_key not in self._focus_log_throttle or 
+            current_time - self._focus_log_throttle[log_key] >= self._focus_log_interval):
+            
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(f"焦点实体轮次增加: {focus_value}, turn_count: {turn_count}")
+            
+            self._focus_log_throttle[log_key] = current_time
+            
+            # 清理过期的节流记录，避免内存泄漏
+            expired_keys = [k for k, t in self._focus_log_throttle.items() 
+                          if current_time - t > self._focus_log_interval * 10]
+            for key in expired_keys:
+                del self._focus_log_throttle[key]
 
     def update_config(self, **kwargs):
         """更新引擎配置"""
@@ -172,6 +196,9 @@ class DialogueEngine:
             "context_updates": {},
         }
 
+        # 计算当前轮次ID（在try块外部定义，确保错误处理时也能访问）
+        current_turn_id = len(self.dialogue_history) + 1
+        
         try:
             # 状态转换：监听 -> 处理中
             self._transition_state(DialogueState.PROCESSING, debug_info)
@@ -186,7 +213,7 @@ class DialogueEngine:
                     # 清除待确认状态和澄清轮次
                     self.context.pop("pending_confirmation", None)
                     self.context.pop("clarification_rounds", None)
-                    response = self._generate_response(pending_result, debug_info)
+                    response = self._generate_response(pending_result, debug_info, current_turn_id)
                     self._transition_state(DialogueState.EXECUTING, debug_info)
                 else:
                     response = "好的，我明白了。还有什么可以帮您的吗？"
@@ -214,17 +241,16 @@ class DialogueEngine:
                         self.context["clarification_rounds"] = clarification_rounds + 1
                         response = self._handle_clarification(intent_result, debug_info)
                         # 即使在澄清流程中也要更新上下文（特别是焦点实体）
-                        self._update_context(intent_result, debug_info)
+                        self._update_context(intent_result, debug_info, current_turn_id)
                         self._transition_state(DialogueState.CLARIFYING, debug_info)
                 else:
                     # 成功识别意图，清除澄清轮次
                     self.context.pop("clarification_rounds", None)
-                    response = self._generate_response(intent_result, debug_info)
-                    self._update_context(intent_result, debug_info)
+                    response = self._generate_response(intent_result, debug_info, current_turn_id)
+                    self._update_context(intent_result, debug_info, current_turn_id)
                     self._transition_state(DialogueState.EXECUTING, debug_info)
 
-            # 计算当前轮次ID（确保一致性）
-            current_turn_id = len(self.dialogue_history) + 1
+            # 当前轮次ID已在开头定义
             
             # 记录对话轮次
             turn = DialogueTurn(
@@ -317,8 +343,8 @@ class DialogueEngine:
             if clarification_type == "auto_high_confidence":
                 # 高置信度自澄清，直接执行
                 debug_info["intent_result"] = new_result
-                self._update_context(new_result, debug_info)
-                return self._generate_response(new_result, debug_info)
+                self._update_context(new_result, debug_info, 0)
+                return self._generate_response(new_result, debug_info, 0)
 
             elif clarification_type == "user_confirmation_needed":
                 # 中等置信度，需要用户确认
@@ -360,7 +386,7 @@ class DialogueEngine:
 
         return False
 
-    def _generate_response(self, intent_result: Dict, debug_info: Dict) -> str:
+    def _generate_response(self, intent_result: Dict, debug_info: Dict, current_turn_id: int = 0) -> str:
         """生成系统响应.
 
         Args:
@@ -639,7 +665,7 @@ class DialogueEngine:
                 return True
             return False
 
-    def _update_context(self, intent_result: Dict, debug_info: Dict):
+    def _update_context(self, intent_result: Dict, debug_info: Dict, current_turn_id: int = 0):
         """更新对话上下文"""
         updates = {}
         
@@ -685,12 +711,14 @@ class DialogueEngine:
             # 只有当设备实体是从用户输入中提取的，才不增加轮次计数
             if not (device_entity and entity_from_input and current_focus.get("value") == device_entity):
                 current_focus["turn_count"] += 1
-                self.logger.debug(f"焦点实体轮次增加: {current_focus['value']}, turn_count: {current_focus['turn_count']}")
+                # 性能优化：在压力测试时完全跳过日志记录
+                pass  # 焦点轮次增加时不记录日志，提升性能
             
             # 检查是否超过生命周期
             if current_focus["turn_count"] >= self.config.focus_entity_turn_decay:
                 # 如果超过生命周期，则移除焦点
-                self.logger.debug(f"焦点实体过期: {current_focus['value']}, turn_count: {current_focus['turn_count']}, decay: {self.config.focus_entity_turn_decay}")
+                # 性能优化：跳过过期日志记录
+                pass
                 self.context.pop("current_focus", None)
                 updates["current_focus"] = "removed"
 

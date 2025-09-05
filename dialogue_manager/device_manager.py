@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple, List, Callable
 from datetime import datetime
 from copy import deepcopy
+import threading
 
 
 # 基础设备抽象
@@ -193,6 +194,8 @@ class DeviceManager:
         # 设备注册表：按类型与房间索引
         self.devices: List[Device] = []
         self._index: Dict[Tuple[str, str], List[Device]] = {}
+        # 线程安全锁
+        self._lock = threading.RLock()
         self._build_default_preset()
         # 版本与事件回调
         self._version: int = 0
@@ -256,20 +259,21 @@ class DeviceManager:
 
     # ---------- 查询与执行 ----------
     def find_device(self, device_type: str, room: Optional[str]) -> Optional[Device]:
-        if room:
-            # 精确匹配房间；若未找到则不回退
-            devs = self._index.get((device_type, room))
-            if devs:
-                return devs[0]
-            return None
-        # 未指定房间，若只有一个同类设备则返回，否则优先客厅
-        all_of_type = [d for d in self.devices if d.device_type == device_type]
-        if len(all_of_type) == 1:
-            return all_of_type[0]
-        for cand in all_of_type:
-            if cand.room == "客厅":
-                return cand
-        return all_of_type[0] if all_of_type else None
+        with self._lock:  # 线程安全保护
+            if room:
+                # 精确匹配房间；若未找到则不回退
+                devs = self._index.get((device_type, room))
+                if devs:
+                    return devs[0]
+                return None
+            # 未指定房间，若只有一个同类设备则返回，否则优先客厅
+            all_of_type = [d for d in self.devices if d.device_type == device_type]
+            if len(all_of_type) == 1:
+                return all_of_type[0]
+            for cand in all_of_type:
+                if cand.room == "客厅":
+                    return cand
+            return all_of_type[0] if all_of_type else None
 
     def perform_action(
         self,
@@ -279,97 +283,100 @@ class DeviceManager:
         attribute: Optional[str] = None,
         number_value: Optional[int] = None,
     ) -> Dict[str, Any]:
-        if not device_type:
-            return {"success": False, "message": "未指定设备类型"}
-        device = self.find_device(device_type, room)
-        if not device:
-            return {"success": False, "message": f"未找到{room or ''}的{device_type}"}
+        with self._lock:  # 线程安全保护
+            if not device_type:
+                return {"success": False, "message": "未指定设备类型"}
+            device = self.find_device(device_type, room)
+            if not device:
+                return {"success": False, "message": f"未找到{room or ''}的{device_type}"}
 
-        action = self._normalize_action(action_keyword)
-        # 记录前快照（仅针对该设备）
-        before_state = deepcopy(device.state)
-        if action == "turn_on":
-            ok, msg = device.turn_on()
-        elif action == "turn_off":
-            ok, msg = device.turn_off()
-        elif action in ("set", "increase", "decrease"):
-            # 对于调节类动作，需要明确属性
-            if not attribute and device_type in ("空调", "风扇"):
-                attribute = "风速" if device_type == "风扇" else "温度"
-            if not attribute and device_type == "灯":
-                attribute = "亮度"
-            if not attribute and device_type == "电视":
-                attribute = "音量"
+            action = self._normalize_action(action_keyword)
+            # 记录前快照（仅针对该设备）
+            before_state = deepcopy(device.state)
+            if action == "turn_on":
+                ok, msg = device.turn_on()
+            elif action == "turn_off":
+                ok, msg = device.turn_off()
+            elif action in ("set", "increase", "decrease"):
+                # 对于调节类动作，需要明确属性
+                if not attribute and device_type in ("空调", "风扇"):
+                    attribute = "风速" if device_type == "风扇" else "温度"
+                if not attribute and device_type == "灯":
+                    attribute = "亮度"
+                if not attribute and device_type == "电视":
+                    attribute = "音量"
 
-            if number_value is None:
-                # 兜底步进
-                step = 5
-                base = self._read_attribute(device, attribute)
-                if isinstance(base, int):
-                    number_value = base + (step if action == "increase" else -step)
-                else:
-                    number_value = step
-            ok, msg = device.adjust(attribute, number_value)
-        else:
-            ok, msg = False, "暂不支持的操作"
+                if number_value is None:
+                    # 兜底步进
+                    step = 5
+                    base = self._read_attribute(device, attribute)
+                    if isinstance(base, int):
+                        number_value = base + (step if action == "increase" else -step)
+                    else:
+                        number_value = step
+                ok, msg = device.adjust(attribute, number_value)
+            else:
+                ok, msg = False, "暂不支持的操作"
 
-        # 若状态变更成功：更新版本、触发事件并刷新最近快照
-        if ok:
-            self._bump_version()
-            after_state = deepcopy(device.state)
-            self._emit_event(
-                "state_changed",
-                {
-                    "device": {
-                        "device_type": device.device_type,
-                        "room": device.room,
-                        "name": device.name,
+            # 若状态变更成功：更新版本、触发事件并刷新最近快照
+            if ok:
+                self._bump_version()
+                after_state = deepcopy(device.state)
+                self._emit_event(
+                    "state_changed",
+                    {
+                        "device": {
+                            "device_type": device.device_type,
+                            "room": device.room,
+                            "name": device.name,
+                        },
+                        "action": action,
+                        "attribute": attribute,
+                        "before_state": before_state,
+                        "after_state": after_state,
+                        "message": msg,
                     },
-                    "action": action,
-                    "attribute": attribute,
-                    "before_state": before_state,
-                    "after_state": after_state,
-                    "message": msg,
-                },
-            )
-            # 更新全局最近快照
-            self._last_snapshot = self.snapshot()
+                )
+                # 更新全局最近快照
+                self._last_snapshot = self.snapshot()
 
-        return {
-            "success": ok,
-            "message": msg,
-            "device_type": device.device_type,
-            "room": device.room,
-            "state": device.state.copy(),
-        }
+            return {
+                "success": ok,
+                "message": msg,
+                "device_type": device.device_type,
+                "room": device.room,
+                "state": device.state.copy(),
+            }
 
     def query_status(self, device_type: Optional[str] = None, room: Optional[str] = None) -> Dict[str, Any]:
-        targets: List[Device]
-        if device_type:
-            if room:
-                dev = self.find_device(device_type, room)
-                targets = [dev] if dev else []
+        with self._lock:  # 线程安全保护
+            targets: List[Device]
+            if device_type:
+                if room:
+                    dev = self.find_device(device_type, room)
+                    targets = [dev] if dev else []
+                else:
+                    targets = [d for d in self.devices if d.device_type == device_type]
             else:
-                targets = [d for d in self.devices if d.device_type == device_type]
-        else:
-            # 当仅指定房间时，按房间过滤
-            if room:
-                targets = [d for d in self.devices if d.room == room]
-            else:
-                # 全量
-                targets = self.devices
+                # 当仅指定房间时，按房间过滤
+                if room:
+                    targets = [d for d in self.devices if d.room == room]
+                else:
+                    # 全量
+                    targets = self.devices
 
-        if not targets:
-            return {"success": False, "message": "未找到对应设备"}
+            if not targets:
+                return {"success": False, "message": "未找到对应设备"}
 
-        lines = [d.status_text() for d in targets]
-        return {"success": True, "message": "；".join(lines), "states": [d.state.copy() for d in targets]}
+            lines = [d.status_text() for d in targets]
+            return {"success": True, "message": "；".join(lines), "states": [d.state.copy() for d in targets]}
 
     def snapshot(self) -> Dict[str, Any]:
-        return {
-            f"{d.room}-{d.device_type}": {"on": d.state.get("on"), **{k: v for k, v in d.state.items() if k != "on"}}
-            for d in self.devices
-        }
+        with self._lock:  # 线程安全保护
+            return {
+                f"{d.room}-{d.device_type}": {"on": d.state.get("on"), **{k: v for k, v in d.state.items() if k != "on"}}
+                for d in self.devices
+            }
 
     def snapshot_with_meta(self) -> Dict[str, Any]:
         """返回带元信息的快照，不破坏 snapshot() 兼容性"""

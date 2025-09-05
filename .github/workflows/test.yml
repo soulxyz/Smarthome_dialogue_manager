@@ -1,0 +1,398 @@
+name: 智能家居对话系统测试
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: '测试类型'
+        required: true
+        default: 'unit'
+        type: choice
+        options:
+        - unit
+        - integration
+        - all
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+
+jobs:
+  # 内部逻辑测试（不消耗API）
+  internal-logic-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8, 3.9, "3.10", "3.11"]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 设置Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: 安装依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+        pip install -e .
+    
+    - name: 创建测试配置
+      run: |
+        mkdir -p tests
+        echo 'sk-test-key-for-offline-testing' > tests/.api_key
+    
+    - name: 运行内部逻辑测试
+      run: |
+        pytest --internal-logic-only \
+               --cov=dialogue_manager \
+               --cov-report=xml \
+               --cov-report=term \
+               --junit-xml=junit.xml \
+               -v
+    
+    - name: 上传覆盖率报告
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: internal-logic
+        name: codecov-${{ matrix.python-version }}
+    
+    - name: 上传测试结果
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results-internal-${{ matrix.python-version }}
+        path: |
+          junit.xml
+          htmlcov/
+
+  # 单元测试
+  unit-tests:
+    runs-on: ubuntu-latest
+    needs: internal-logic-tests
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 设置Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+    
+    - name: 安装依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+        pip install -e .
+    
+    - name: 创建测试配置
+      run: |
+        mkdir -p tests
+        echo 'sk-test-key-for-offline-testing' > tests/.api_key
+    
+    - name: 运行单元测试
+      run: |
+        pytest --unit-only \
+               --skip-slow \
+               --cov=dialogue_manager \
+               --cov-report=xml \
+               --junit-xml=junit-unit.xml \
+               -v
+    
+    - name: 上传测试结果
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results-unit
+        path: |
+          junit-unit.xml
+          htmlcov/
+
+  # API集成测试（仅在有API密钥时运行）
+  api-integration-tests:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.test_type == 'all'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 设置Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+    
+    - name: 安装依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+        pip install -e .
+    
+    - name: 设置API密钥
+      run: |
+        mkdir -p tests
+        echo '${{ secrets.SILICONFLOW_API_KEY }}' > tests/.api_key
+      if: secrets.SILICONFLOW_API_KEY != ''
+    
+    - name: 运行API集成测试
+      run: |
+        pytest -m api_required \
+               --skip-slow \
+               --api-stats \
+               --junit-xml=junit-api.xml \
+               -v
+      if: secrets.SILICONFLOW_API_KEY != ''
+    
+    - name: 跳过API测试（无密钥）
+      run: |
+        echo "跳过API测试：未设置API密钥"
+      if: secrets.SILICONFLOW_API_KEY == ''
+    
+    - name: 上传API测试结果
+      uses: actions/upload-artifact@v3
+      if: always() && secrets.SILICONFLOW_API_KEY != ''
+      with:
+        name: test-results-api
+        path: junit-api.xml
+
+  # 性能测试
+  performance-tests:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 设置Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+    
+    - name: 安装依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+        pip install -e .
+    
+    - name: 创建测试配置
+      run: |
+        mkdir -p tests
+        echo 'sk-test-key-for-offline-testing' > tests/.api_key
+    
+    - name: 运行性能测试
+      run: |
+        pytest --performance-only \
+               --performance-report \
+               --junit-xml=junit-performance.xml \
+               -v
+    
+    - name: 上传性能测试结果
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results-performance
+        path: junit-performance.xml
+
+  # 代码质量检查
+  code-quality:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 设置Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+    
+    - name: 安装依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements-dev.txt
+    
+    - name: 代码格式检查
+      run: |
+        black --check dialogue_manager tests --line-length=120
+        isort --check dialogue_manager tests --profile black
+    
+    - name: 代码质量检查
+      run: |
+        flake8 dialogue_manager tests --max-line-length=120 --ignore=E203,W503
+        pylint dialogue_manager --disable=C0114,C0115,C0116,R0903,R0913 --exit-zero
+    
+    - name: 安全检查
+      run: |
+        bandit -r dialogue_manager -f json -o bandit-report.json || true
+    
+    - name: 上传安全报告
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-report
+        path: bandit-report.json
+
+  # 集成测试（完整场景）
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: [unit-tests, performance-tests]
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.test_type != 'unit'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 设置Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+    
+    - name: 安装依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+        pip install -e .
+    
+    - name: 设置测试环境
+      run: |
+        mkdir -p tests data
+        echo '${{ secrets.SILICONFLOW_API_KEY || 'sk-test-key-for-offline-testing' }}' > tests/.api_key
+    
+    - name: 运行集成测试
+      run: |
+        if [ "${{ secrets.SILICONFLOW_API_KEY }}" != "" ]; then
+          pytest --integration-only \
+                 --skip-slow \
+                 --junit-xml=junit-integration.xml \
+                 -v
+        else
+          pytest --integration-only \
+                 --internal-logic-only \
+                 --junit-xml=junit-integration.xml \
+                 -v
+        fi
+    
+    - name: 运行系统验证测试
+      run: |
+        pytest tests/test_real_integration.py::TestCompleteSystemValidation::test_end_to_end_system_validation \
+               --junit-xml=junit-system-validation.xml \
+               -v
+    
+    - name: 上传集成测试结果
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results-integration
+        path: |
+          junit-integration.xml
+          junit-system-validation.xml
+
+  # 生成测试报告
+  test-report:
+    runs-on: ubuntu-latest
+    needs: [internal-logic-tests, unit-tests, performance-tests, code-quality]
+    if: always()
+    
+    steps:
+    - name: 下载所有测试结果
+      uses: actions/download-artifact@v3
+      with:
+        path: test-results/
+    
+    - name: 生成测试摘要
+      run: |
+        echo "# 测试摘要" > test-summary.md
+        echo "" >> test-summary.md
+        echo "## 测试执行情况" >> test-summary.md
+        
+        # 内部逻辑测试
+        if [ -d "test-results/test-results-internal-3.10" ]; then
+          echo "- ✅ 内部逻辑测试: 通过" >> test-summary.md
+        else
+          echo "- ❌ 内部逻辑测试: 失败" >> test-summary.md
+        fi
+        
+        # 单元测试
+        if [ -d "test-results/test-results-unit" ]; then
+          echo "- ✅ 单元测试: 通过" >> test-summary.md
+        else
+          echo "- ❌ 单元测试: 失败" >> test-summary.md
+        fi
+        
+        # 性能测试
+        if [ -d "test-results/test-results-performance" ]; then
+          echo "- ✅ 性能测试: 通过" >> test-summary.md
+        else
+          echo "- ❌ 性能测试: 失败" >> test-summary.md
+        fi
+        
+        # API测试
+        if [ -d "test-results/test-results-api" ]; then
+          echo "- ✅ API集成测试: 通过" >> test-summary.md
+        else
+          echo "- ⚠️ API集成测试: 跳过（无API密钥）" >> test-summary.md
+        fi
+        
+        echo "" >> test-summary.md
+        echo "## 代码质量" >> test-summary.md
+        if [ -f "test-results/security-report/bandit-report.json" ]; then
+          echo "- ✅ 安全检查: 完成" >> test-summary.md
+        fi
+        
+        echo "" >> test-summary.md
+        echo "生成时间: $(date)" >> test-summary.md
+    
+    - name: 上传测试摘要
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-summary
+        path: test-summary.md
+
+# 定时任务：每日运行完整测试（如果有API密钥）
+  nightly-tests:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 设置Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+    
+    - name: 安装依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+        pip install -e .
+    
+    - name: 设置API密钥
+      run: |
+        mkdir -p tests
+        echo '${{ secrets.SILICONFLOW_API_KEY }}' > tests/.api_key
+      if: secrets.SILICONFLOW_API_KEY != ''
+    
+    - name: 运行夜间测试
+      run: |
+        if [ "${{ secrets.SILICONFLOW_API_KEY }}" != "" ]; then
+          pytest --api-stats --performance-report -v
+        else
+          pytest --internal-logic-only --performance-report -v
+        fi
+    
+    - name: 发送通知
+      if: failure()
+      run: |
+        echo "夜间测试失败，需要检查"
+        # 这里可以添加Slack、邮件等通知

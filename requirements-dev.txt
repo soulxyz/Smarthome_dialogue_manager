@@ -1,39 +1,58 @@
-# 开发环境依赖
-# 安装: pip install -r requirements-dev.txt
+# 开发和测试依赖
 
-# 包含基础依赖
--r requirements.txt
+# 测试框架
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.0.0
+pytest-html>=3.1.0
+pytest-xdist>=3.0.0  # 并行测试
+pytest-timeout>=2.1.0  # 测试超时
+pytest-mock>=3.10.0  # Mock支持
 
-# 额外的开发工具
-ipython>=8.15.0
-jupyter>=1.0.0
-notebook>=7.0.0
+# 代码质量
+black>=23.0.0  # 代码格式化
+isort>=5.12.0  # 导入排序
+flake8>=6.0.0  # 代码检查
+pylint>=2.17.0  # 代码分析
+mypy>=1.4.0  # 类型检查
+
+# 测试工具
+factory-boy>=3.2.0  # 测试数据工厂
+faker>=18.10.0  # 假数据生成
+responses>=0.23.0  # HTTP响应mock
+freezegun>=1.2.0  # 时间mock
 
 # 性能分析
-memory-profiler>=0.61.0
-line-profiler>=4.1.0
-
-# 调试工具
-pdbpp>=0.10.3
-icecream>=2.1.3
+psutil>=5.9.0  # 系统信息
+memory-profiler>=0.60.0  # 内存分析
+line-profiler>=4.0.0  # 行级性能分析
 
 # 文档生成
-sphinx>=7.1.0
-sphinx-rtd-theme>=1.3.0
-myst-parser>=2.0.0
+pdoc>=13.0.0  # API文档生成
+sphinx>=6.0.0  # 文档构建
+sphinx-rtd-theme>=1.2.0  # 文档主题
 
-# 代码复杂度分析
-radon>=6.0.1
-xenon>=0.9.0
+# 开发工具
+ipython>=8.14.0  # 交互式Python
+ipdb>=0.13.0  # 调试器
+rich>=13.4.0  # 丰富的输出格式
 
-# 依赖分析
-pipdeptree>=2.13.0
-pip-audit>=2.6.0
+# 数据库工具
+sqlite-utils>=3.30.0  # SQLite工具
 
-# 环境管理
-virtualenv>=20.24.0
-pipenv>=2023.7.23
+# 网络测试
+httpx>=0.24.0  # HTTP客户端测试
+aioresponses>=0.7.0  # 异步HTTP mock
 
-# API文档
-fastapi>=0.103.0  # 如果需要API文档
-uvicorn>=0.23.0   # 如果需要API服务器
+# 配置管理
+python-dotenv>=1.0.0  # 环境变量
+
+# 并发测试
+asyncio-compat>=0.1.2
+
+# 安全测试
+bandit>=1.7.0  # 安全漏洞检查
+
+# CI/CD相关
+coverage[toml]>=7.0.0  # 覆盖率报告
+junit-xml>=1.9  # JUnit格式报告

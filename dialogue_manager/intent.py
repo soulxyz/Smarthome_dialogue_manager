@@ -248,8 +248,8 @@ class IntentRecognizer:
                 self.logger.info(f"Pronoun detected: '{p}' -> '{pronoun_info['placeholder']}' in '{user_input}'")
                 break # 只替换第一个找到的代词
 
-        # 去除标点符号（保留中文标点、下划线和数字）
-        processed = re.sub(r"[^\u4e00-\u9fa5a-zA-Z0-9\s_]", "", processed)
+        # 去除标点符号（保留中文、英文、数字、空格、下划线以及重要的单位符号）
+        processed = re.sub(r"[^\u4e00-\u9fa5a-zA-Z0-9\s_%度点档级]", "", processed)
         self.logger.info(f"Preprocessed input: '{user_input}' -> '{processed}', pronoun_info: {pronoun_info}")
         return processed, pronoun_info
 
@@ -396,9 +396,10 @@ class IntentRecognizer:
                     entities.append(entity)
                     found_spans.append((start, end))
 
-        # 3. 抽取数值实体
-        number_pattern = r"(\d+)\s*(度|点|小时|分钟|%|档)"
-        for match in re.finditer(number_pattern, user_input):
+        # 3. 抽取数值实体 - 增强版：支持更多场景
+        # 优先匹配带单位的数字
+        number_with_unit_pattern = r"(\d+)\s*(度|点|小时|分钟|%|档|级|倍|秒|分)"
+        for match in re.finditer(number_with_unit_pattern, user_input):
             start, end = match.span()
             is_overlapping = False
             for found_start, found_end in found_spans:
@@ -417,6 +418,32 @@ class IntentRecognizer:
                 )
                 entities.append(entity)
                 found_spans.append((start, end))
+        
+        # 然后匹配上下文相关的裸数字（在设备控制语境下）
+        if not any(e.entity_type == "number" for e in entities):  # 只有没找到带单位的数字时才匹配裸数字
+            # 匹配在特定上下文中的数字：调节、设置、到等关键词后的数字
+            contextual_number_pattern = r"(?:调节|设置|调到|调成|到|为|成)\s*(\d+)"
+            for match in re.finditer(contextual_number_pattern, user_input):
+                number_start = match.start(1)
+                number_end = match.end(1)
+                is_overlapping = False
+                for found_start, found_end in found_spans:
+                    if number_start < found_end and number_end > found_start:
+                        is_overlapping = True
+                        break
+
+                if not is_overlapping:
+                    entity = Entity(
+                        name=match.group(1),
+                        value=match.group(1),
+                        entity_type="number",
+                        confidence=0.8,  # 稍低的置信度，因为是上下文推断
+                        start_pos=number_start,
+                        end_pos=number_end,
+                    )
+                    entities.append(entity)
+                    found_spans.append((number_start, number_end))
+                    break  # 只取第一个匹配的数字
 
         # 4. 抽取地点实体（动态获取）
         location_keywords = self._get_location_keywords()
