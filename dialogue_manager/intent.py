@@ -242,7 +242,11 @@ class IntentRecognizer:
         # 常见代词列表
         pronouns = ["它", "他", "她", "这个", "那个", "it", "this", "that"]
         
-        processed = user_input.strip().lower()
+        # 处理None输入
+        if user_input is None:
+            processed = ""
+        else:
+            processed = user_input.strip().lower()
         
         # 代词替换
         for p in pronouns:
@@ -520,6 +524,9 @@ class IntentRecognizer:
                             found_spans.append((start, end))
                             break  # 找到一个匹配就跳出pattern循环
 
+        # 5. 隐含设备识别：根据属性关键词推断对应的设备类型
+        self._add_implicit_device_entities(user_input, entities)
+
         return entities
 
     def _update_dynamic_device_entities(self):
@@ -590,6 +597,41 @@ class IntentRecognizer:
                 "增加": ["增加", "提高", "调高", "加大"],
                 "减少": ["减少", "降低", "调低", "减小"],
             }
+    
+    def _add_implicit_device_entities(self, user_input: str, entities: List[Entity]) -> None:
+        """根据属性关键词推断对应的设备类型"""
+        # 检查是否已经有设备实体
+        has_device = any(e.entity_type == "device" for e in entities)
+        if has_device:
+            return  # 已经有明确的设备实体，不需要推断
+        
+        # 属性到设备类型的映射
+        attribute_to_device = {
+            "温度": "空调",
+            "湿度": "空调", 
+            "亮度": "灯",
+            "音量": "电视",
+            "风速": "风扇",
+            "频道": "电视",
+            "颜色": "灯",
+            "色温": "灯"
+        }
+        
+        # 查找属性关键词
+        for attribute, device_type in attribute_to_device.items():
+            if attribute in user_input:
+                # 添加隐含的设备实体
+                entity = Entity(
+                    name=device_type,
+                    value=device_type,
+                    entity_type="device",
+                    confidence=0.7,  # 降低置信度，因为是推断的
+                    start_pos=-1,  # 标记为隐含实体
+                    end_pos=-1,
+                )
+                entities.append(entity)
+                self.logger.debug(f"Added implicit device entity '{device_type}' based on attribute '{attribute}'")
+                break  # 只添加一个设备实体
     
     def _update_dynamic_patterns(self):
         """动态更新识别模式，包含设备和房间名称"""

@@ -141,20 +141,32 @@ class TestDeviceCreationAndConfiguration:
         """压力测试：设备状态一致性"""
         manager = DeviceManager()
         
-        # 大量状态变更操作
+        # 大量状态变更操作（仅使用存在的设备组合）
+        valid_combinations = [
+            ("灯", "客厅", "调节", "亮度"),
+            ("灯", "主卧", "调节", "亮度"), 
+            ("灯", "次卧", "调节", "亮度"),
+            ("空调", "客厅", "设置", "温度"),
+            ("空调", "主卧", "设置", "温度"),
+            ("电视", "客厅", "调节", "音量"),
+            ("风扇", "客厅", "设置", "风速"),
+            ("风扇", "次卧", "设置", "风速")
+        ]
+        
         operations = []
         for i in range(200):
-            device_type = ["灯", "空调", "电视", "风扇"][i % 4]
-            room = ["客厅", "主卧", "次卧"][i % 3]
+            device_type, room, action, attribute = valid_combinations[i % len(valid_combinations)]
             
-            if device_type == "灯":
-                operations.append((device_type, room, "调节", "亮度", i % 100))
-            elif device_type == "空调":
-                operations.append((device_type, room, "设置", "温度", 16 + (i % 15)))
-            elif device_type == "电视":
-                operations.append((device_type, room, "调节", "音量", i % 100))
-            else:
-                operations.append((device_type, room, "设置", "风速", 1 + (i % 5)))
+            if attribute == "亮度":
+                value = i % 100
+            elif attribute == "温度":
+                value = 16 + (i % 15)
+            elif attribute == "音量":
+                value = i % 100
+            else:  # 风速
+                value = 1 + (i % 5)
+                
+            operations.append((device_type, room, action, attribute, value))
         
         # 执行所有操作
         start_time = time.time()
@@ -236,8 +248,24 @@ class TestDeviceCreationAndConfiguration:
                 if should_succeed:
                     assert ok, f"Expected success for {device.device_type}.{attribute}={value}, but got: {msg}"
                     if expected_value is not None:
-                        actual_value = device.state.get(attribute) or device.state.get(attribute.lower())
-                        assert actual_value == expected_value, f"Expected {expected_value}, got {actual_value}"
+                        # 映射中文属性名到实际存储的英文属性名
+                        if attribute == "风速":
+                            # 空调设备使用fan_speed，风扇设备使用speed
+                            actual_attr = "fan_speed" if "空调" in device.device_type else "speed"
+                        else:
+                            attribute_mapping = {
+                                "亮度": "brightness",
+                                "温度": "temperature", 
+                                "音量": "volume",
+                                "频道": "channel",
+                                "模式": "mode"
+                            }
+                            actual_attr = attribute_mapping.get(attribute, attribute)
+                        # 修复：正确处理0值，避免被or操作符过滤掉
+                        actual_value = device.state.get(actual_attr)
+                        if actual_value is None:
+                            actual_value = device.state.get(attribute)
+                        assert actual_value == expected_value, f"Expected {expected_value}, got {actual_value} for attribute {actual_attr}"
                     successful_tests += 1
                 else:
                     assert not ok, f"Expected failure for {device.device_type}.{attribute}={value}, but succeeded"
@@ -391,9 +419,16 @@ class TestDeviceManagerEventSystem:
         start_time = time.time()
         operations_count = 200
         
+        # 使用存在的设备组合
+        valid_device_combinations = [
+            ("灯", "客厅"), ("灯", "主卧"), ("灯", "次卧"),
+            ("空调", "客厅"), ("空调", "主卧"),
+            ("电视", "客厅"),
+            ("风扇", "客厅"), ("风扇", "次卧")
+        ]
+        
         for i in range(operations_count):
-            device_type = ["灯", "空调", "电视", "风扇"][i % 4]
-            room = ["客厅", "主卧", "次卧"][i % 3]
+            device_type, room = valid_device_combinations[i % len(valid_device_combinations)]
             action = "打开" if i % 2 == 0 else "关闭"
             
             device_manager.perform_action(action, device_type, room)
@@ -702,9 +737,9 @@ class TestDeviceManagerMemoryAndResources:
         manager.devices.clear()
         manager._index.clear()
         
-        # 创建大量设备和复杂状态
+        # 创建大量设备和复杂状态，确保每个设备都有唯一的房间-设备类型组合
         for i in range(200):
-            room = f"房间{i // 10}"
+            room = f"房间{i}"  # 每个设备都有唯一的房间
             
             # 创建复杂状态的设备
             light = LightDevice(f"智能灯{i}", room)
@@ -728,8 +763,8 @@ class TestDeviceManagerMemoryAndResources:
         # 测试大状态操作性能
         start_time = time.time()
         for i in range(50):
-            result = manager.perform_action("调节", f"智能灯{i}", f"房间{i//10}", attribute="亮度", number_value=i % 100)
-            assert result["success"]
+            result = manager.perform_action("调节", "灯", f"房间{i}", attribute="亮度", number_value=i % 100)
+            assert result["success"], f"Failed to adjust device at room {i}: {result.get('message', 'Unknown error')}"
         
         operation_time = time.time() - start_time
         assert operation_time < 3.0  # 50次复杂设备操作应在3秒内完成

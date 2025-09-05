@@ -361,6 +361,10 @@ class DialogueEngine:
         if "pending_confirmation" not in self.context:
             return False
 
+        # 处理None输入
+        if user_input is None:
+            return False
+
         # 检查确认关键词
         confirmation_keywords = ["是", "对", "确认", "好的", "可以", "yes", "ok", "嗯"]
         rejection_keywords = ["不是", "不对", "不", "错了", "no", "重新"]
@@ -379,8 +383,8 @@ class DialogueEngine:
             debug_info["confirmation_result"] = "rejected"
             return False
 
-        # 如果输入很短且不明确，可能是确认
-        if len(user_input.strip()) <= 2 and user_input_lower in ["是", "对", "好", "嗯"]:
+        # 如果输入很短且不明确，可能是确认（此处user_input已经过None检查，但为了额外安全再次确保）
+        if user_input and len(user_input.strip()) <= 2 and user_input_lower in ["是", "对", "好", "嗯"]:
             debug_info["confirmation_result"] = "confirmed"
             return True
 
